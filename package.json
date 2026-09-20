@@ -12,10 +12,11 @@
     "catalog"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.12.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
