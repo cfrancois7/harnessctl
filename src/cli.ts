@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
+import { addCommand } from "./commands/add.js";
 import { catalogCommand } from "./commands/catalog.js";
+import { initCommand } from "./commands/init.js";
 import { validateCommand } from "./commands/validate.js";
 import type { Command, Env } from "./env.js";
 import { KitError } from "./errors.js";
@@ -8,7 +10,9 @@ import { clackPrompter } from "./prompts.js";
 import { SCOPES, type Scope } from "./types.js";
 
 const COMMANDS: Record<string, Command> = {
+  add: addCommand,
   catalog: catalogCommand,
+  init: initCommand,
   validate: validateCommand,
 };
 
