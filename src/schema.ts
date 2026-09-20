@@ -6,9 +6,11 @@ import {
   type ConfigField, type ModuleDef, type ModuleManifest, type Profile,
 } from "./types.js";
 
-const relPath = z.string().min(1).refine(
-  (p) => !p.startsWith("/") && !p.includes("\\") && !p.split("/").includes("..") && !p.split("/").includes(""),
-  "must be a relative POSIX path without '..'",
+/** A path that can safely be resolved inside a scope root. Shared with the lockfile schema. */
+export const relPath = z.string().min(1).refine(
+  (p) => !p.startsWith("/") && !p.includes("\\")
+    && !p.split("/").some((segment) => segment === "" || segment === "." || segment === ".."),
+  "must be a relative POSIX path without '.' or '..' segments",
 );
 
 const configField = z.object({
@@ -60,7 +62,8 @@ const catalogIndexSchema = z.object({
   profiles: z.array(relPath).default([]),
 }).strict();
 
-function parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown, where: string): T {
+/** Parse `raw`, or throw a KitError listing every problem. Shared with the lockfile schema. */
+export function parseSchema<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown, where: string): T {
   const result = schema.safeParse(raw);
   if (result.success) return result.data;
   const issues = result.error.issues.map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}` +
@@ -69,15 +72,15 @@ function parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown, whe
 }
 
 export function parseModuleManifest(raw: unknown, where: string): ModuleManifest {
-  return parse(moduleSchema, raw, where) as ModuleManifest;
+  return parseSchema(moduleSchema, raw, where) as ModuleManifest;
 }
 
 export function parseProfile(raw: unknown, where: string): Omit<Profile, "catalog"> {
-  return parse(profileSchema, raw, where);
+  return parseSchema(profileSchema, raw, where);
 }
 
 export function parseCatalogIndex(raw: unknown, where: string): { name: string; modules: string[]; profiles: string[] } {
-  return parse(catalogIndexSchema, raw, where);
+  return parseSchema(catalogIndexSchema, raw, where);
 }
 
 export function configValueProblem(key: string, field: ConfigField, value: unknown): string | null {

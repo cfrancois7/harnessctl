@@ -67,19 +67,21 @@ describe("kit status", () => {
     expect(r.output).toContain("missing .claude/kit/hooks/alpha/check.mjs");
   });
 
-  it("reports an unsafe owned path from the lockfile as an issue and still checks the rest", async () => {
+  // F5: an unsafe path no longer reaches computeStatus — the lockfile schema rejects it on read,
+  // which is stricter and intended. computeStatus keeps its guard for damage it can still see
+  // (a block with no end marker, a symlink escape); the test above covers that.
+  it("refuses a lockfile that carries an unsafe owned path", async () => {
     const lockFile = inProject(ws, ".harness-kit/lock.json");
     const lock = JSON.parse(readFileSync(lockFile, "utf8"));
     lock.modules.alpha.owned.files[0].path = "../evil";
     writeFileSync(lockFile, JSON.stringify(lock, null, 2));
-    delete process.env.ALPHA_TOKEN;
 
     const r = await kit(["status"]);
     expect(r.code).toBe(1);
-    expect(r.output).not.toMatch(/^error:/);
-    expect(r.output).toContain("unsafe target path");
-    expect(r.output).toContain("../evil");
-    expect(r.output).toContain("project alpha: env var ALPHA_TOKEN is not set");
+    expect(r.output).toMatch(/^error:/);
+    expect(r.output).toContain(lockFile);
+    expect(r.output).toContain("owned.files.0.path");
+    expect(r.output).toContain("relative POSIX path");
   });
 });
 
