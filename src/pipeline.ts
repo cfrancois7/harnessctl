@@ -143,15 +143,32 @@ export async function applyPlan(ctx: ScopeContext, ops: Operation[], env: Env): 
 
 export interface InstallItem { def: ModuleDef; config: Record<string, unknown>; scope: Scope }
 
+const opsForGroup = (group: InstallItem[], scope: Scope, ctx: ScopeContext, env: Env): Operation[] =>
+  group.flatMap((item) =>
+    planModule({ def: item.def, config: item.config }, scope, ctx.adapter, { home: env.home }, ctx.lock));
+
 export async function installModules(
   items: InstallItem[], loaded: LoadedCatalogs, env: Env, profile?: string,
 ): Promise<void> {
+  // Validate every scope's plan before writing anything. Scopes are applied one at a time below,
+  // so without this pass a problem that's knowable up front in a later scope (an unsupported
+  // capability/scope, an unparseable settings file, a confinement violation, ...) would surface
+  // only after an earlier scope had already been committed and locked. This pre-pass builds each
+  // scope's operations and stages them in memory (auto-"keep" on any conflict, result discarded)
+  // purely to surface such errors; it performs no prompts, no output and no writes.
   for (const scope of SCOPES) {
     const group = items.filter((item) => item.scope === scope);
     if (group.length === 0) continue;
     const ctx = openScope(scope, env);
-    const ops = group.flatMap((item) =>
-      planModule({ def: item.def, config: item.config }, scope, ctx.adapter, { home: env.home }, ctx.lock));
+    const ops = opsForGroup(group, scope, ctx, env);
+    await stage(ops, { scopeRoot: ctx.scopeRoot, createdFiles: ctx.lock.createdFiles, onConflict: async () => "keep" });
+  }
+
+  for (const scope of SCOPES) {
+    const group = items.filter((item) => item.scope === scope);
+    if (group.length === 0) continue;
+    const ctx = openScope(scope, env);
+    const ops = opsForGroup(group, scope, ctx, env);
     for (const item of group) {
       const support = supportStatus(item.def, ctx.adapter);
       if (support.status === "degraded") {

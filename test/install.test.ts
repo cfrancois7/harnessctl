@@ -90,6 +90,20 @@ describe("kit init", () => {
     const r = await runKit(["init", "--profile", "dev", "--yes"], { cwd: ws.project, home: inHome(ws, "empty") });
     expect(r).toMatchObject({ code: 1, output: expect.stringContaining("kit catalog add") });
   });
+
+  it("does not touch any scope when another scope's plan fails", async () => {
+    mkdirSync(inHome(ws, ".claude"), { recursive: true });
+    writeFileSync(inHome(ws, ".claude/settings.json"), "{ nope");
+    const before = snapshotTree(ws.project);
+
+    const r = await kit(["init", "--profile", "dev", "--yes"]);
+
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("cannot parse");
+    expect(r.output).toContain("settings.json");
+    expect(snapshotTree(ws.project)).toEqual(before);
+    expect(readFileSync(inHome(ws, ".claude/settings.json"), "utf8")).toBe("{ nope");
+  });
 });
 
 describe("kit add", () => {
