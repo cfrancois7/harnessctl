@@ -1,0 +1,5 @@
+{
+  "name": "example",
+  "description": "Installs the example module; use it to check that the kit works in your harness",
+  "modules": { "kit-example": { "scope": "project" } }
+}
