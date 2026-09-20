@@ -15,6 +15,9 @@ npx harness-kit init                                  # pick a profile, tick mod
 npx harness-kit status                                # drift, outdated modules, missing env vars (exit 1 on problems)
 ```
 
+The installed command is `kit`: once the package is installed (`npm i -g harness-kit`), every
+`npx harness-kit …` below can be typed as `kit …`.
+
 Non-interactive (CI, onboarding scripts): `npx harness-kit init --profile backend-dev --yes`.
 
 | Command | Purpose |
@@ -35,9 +38,10 @@ Every mutating command prints its plan first and accepts `--dry-run` and `--yes`
   later, inside your harness, and `update` shows you their diff before applying.
 - **It only touches what it owns.** Owned files are tracked by hash in
   `.harness-kit/lock.json` (commit it). If you edited one, the kit asks; under `--yes` it
-  keeps your version and warns. Entries merged into `settings.json` / `.mcp.json` and the
-  block in `CLAUDE.md` are removed individually; the rest of those files is left
-  byte-for-byte alone.
+  keeps your version and warns. Entries merged into `settings.json`, `.mcp.json` /
+  `~/.claude.json` (user-scope MCP servers) and the block in `CLAUDE.md` are removed
+  individually; the rest of those files is left byte-for-byte alone. An MCP server you
+  already have under the same name is never taken over: the kit keeps yours and warns.
 - **Scaffolded files are yours.** They are created once and never touched again.
 - **Writes are all-or-nothing**, with originals backed up under `.harness-kit/backup/`. If
   a target changed on disk after the plan was computed, the write is aborted and rolled
@@ -59,7 +63,7 @@ Start from [`catalog/modules/kit-example`](catalog/modules/kit-example). A modul
 
 ```
 module.json          manifest (below)
-skills/<name>/       Agent Skills folders, copied verbatim
+skills/<name>/       Agent Skills folders, copied verbatim (UTF-8 text files only)
 hooks/*.mjs          Node scripts; the whole folder is copied
 instructions/*.md    fragments merged into CLAUDE.md; {{placeholders}} rendered
 templates/…          scaffold sources; {{placeholders}} rendered
@@ -101,8 +105,10 @@ run(({ event, tool, session, config, allow, warn, ask, deny }) => {
 ```
 
 `onError: "allow"` (default) means a crashing hook never blocks work; use `"deny"` for
-security hooks that must fail closed. If the same module is installed at user and project
-scope, the project install wins and the user-scope hook stands down.
+security hooks that must fail closed — a `"deny"` hook is registered with its policy in the
+command itself, so it still denies if its own config file is missing or unreadable. If the
+same module is installed at user and project scope, the project install wins and the
+user-scope hook stands down.
 
 Profiles bundle modules, possibly from other catalogs:
 
