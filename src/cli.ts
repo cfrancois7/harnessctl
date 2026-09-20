@@ -2,7 +2,10 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { addCommand } from "./commands/add.js";
 import { catalogCommand } from "./commands/catalog.js";
+import { configCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
+import { removeCommand } from "./commands/remove.js";
+import { updateCommand } from "./commands/update.js";
 import { validateCommand } from "./commands/validate.js";
 import type { Command, Env } from "./env.js";
 import { KitError } from "./errors.js";
@@ -12,7 +15,10 @@ import { SCOPES, type Scope } from "./types.js";
 const COMMANDS: Record<string, Command> = {
   add: addCommand,
   catalog: catalogCommand,
+  config: configCommand,
   init: initCommand,
+  remove: removeCommand,
+  update: updateCommand,
   validate: validateCommand,
 };
 

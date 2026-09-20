@@ -147,21 +147,29 @@ const opsForGroup = (group: InstallItem[], scope: Scope, ctx: ScopeContext, env:
   group.flatMap((item) =>
     planModule({ def: item.def, config: item.config }, scope, ctx.adapter, { home: env.home }, ctx.lock));
 
+/**
+ * Validate a scope's plan without writing anything: stages the ops in memory (auto-"keep" on any
+ * conflict, result discarded) purely to surface errors that are knowable up front (an unparseable
+ * settings file, a confinement violation, ...) — no prompts, no output, no writes. Callers that
+ * apply several scopes in sequence should call this for every scope before applying any of them,
+ * so a problem in a later scope aborts before an earlier scope is committed and locked.
+ */
+export async function validatePlan(ctx: ScopeContext, ops: Operation[]): Promise<void> {
+  await stage(ops, { scopeRoot: ctx.scopeRoot, createdFiles: ctx.lock.createdFiles, onConflict: async () => "keep" });
+}
+
 export async function installModules(
   items: InstallItem[], loaded: LoadedCatalogs, env: Env, profile?: string,
 ): Promise<void> {
   // Validate every scope's plan before writing anything. Scopes are applied one at a time below,
   // so without this pass a problem that's knowable up front in a later scope (an unsupported
   // capability/scope, an unparseable settings file, a confinement violation, ...) would surface
-  // only after an earlier scope had already been committed and locked. This pre-pass builds each
-  // scope's operations and stages them in memory (auto-"keep" on any conflict, result discarded)
-  // purely to surface such errors; it performs no prompts, no output and no writes.
+  // only after an earlier scope had already been committed and locked.
   for (const scope of SCOPES) {
     const group = items.filter((item) => item.scope === scope);
     if (group.length === 0) continue;
     const ctx = openScope(scope, env);
-    const ops = opsForGroup(group, scope, ctx, env);
-    await stage(ops, { scopeRoot: ctx.scopeRoot, createdFiles: ctx.lock.createdFiles, onConflict: async () => "keep" });
+    await validatePlan(ctx, opsForGroup(group, scope, ctx, env));
   }
 
   for (const scope of SCOPES) {
