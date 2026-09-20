@@ -31,6 +31,29 @@ function resolveRef(clone: string, source: CatalogSource): string {
 export function fetchCatalog(
   source: CatalogSource, cacheRoot: string, options: { offline?: boolean; sha?: string } = {},
 ): FetchedCatalog {
+  // Validate subdir to prevent path traversal
+  if (source.subdir) {
+    if (source.subdir.startsWith("/") || source.subdir.includes("\\")) {
+      throw new KitError(`invalid catalog subdir "${source.subdir}": must be a relative path inside the repository`);
+    }
+    const segments = source.subdir.split("/");
+    for (const segment of segments) {
+      if (segment === "" || segment === "." || segment === "..") {
+        throw new KitError(`invalid catalog subdir "${source.subdir}": must be a relative path inside the repository`);
+      }
+    }
+  }
+
+  // Validate sha to prevent git injection
+  if (options.sha && !/^[0-9a-f]{7,40}$/.test(options.sha)) {
+    throw new KitError(`invalid catalog sha "${options.sha}"`);
+  }
+
+  // Validate ref to prevent git injection
+  if (source.ref && source.ref.startsWith("-")) {
+    throw new KitError(`invalid catalog ref "${source.ref}"`);
+  }
+
   const key = createHash("sha1").update(`${source.url}\n${source.ref ?? ""}`).digest("hex").slice(0, 16);
   const clone = join(cacheRoot, key);
   const cached = existsSync(join(clone, ".git"));

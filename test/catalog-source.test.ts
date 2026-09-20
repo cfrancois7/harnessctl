@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fetchCatalog } from "../src/catalog/source.js";
@@ -55,5 +55,39 @@ describe("fetchCatalog", () => {
     const repo = makeGitCatalog(FIXTURES.public);
     expect(() => fetchCatalog({ url: repo }, cache, { offline: true })).toThrowError(/not cached.*--offline/);
     expect(() => fetchCatalog({ url: repo, ref: "nope" }, cache)).toThrowError(/ref "nope" not found/);
+  });
+
+  it("validates subdir to prevent path traversal", () => {
+    const repo = makeGitCatalog(FIXTURES.public);
+    const cache = tempDir("kit-cache-");
+    expect(() => fetchCatalog({ url: repo, subdir: ".." }, cache)).toThrowError(/invalid catalog subdir/);
+    expect(() => fetchCatalog({ url: repo, subdir: "../x" }, cache)).toThrowError(/invalid catalog subdir/);
+    expect(() => fetchCatalog({ url: repo, subdir: "a/../../x" }, cache)).toThrowError(/invalid catalog subdir/);
+    expect(() => fetchCatalog({ url: repo, subdir: "/etc" }, cache)).toThrowError(/invalid catalog subdir/);
+    expect(() => fetchCatalog({ url: repo, subdir: "a//b" }, cache)).toThrowError(/invalid catalog subdir/);
+    expect(() => fetchCatalog({ url: repo, subdir: "./a" }, cache)).toThrowError(/invalid catalog subdir/);
+  });
+
+  it("accepts valid nested subdirectories", () => {
+    const repo = tempDir("kit-valid-subdir-");
+    git(repo, "init", "--quiet", "-b", "main");
+    const subdir = "nested/catalog";
+    const subpath = join(repo, subdir);
+    mkdirSync(subpath, { recursive: true });
+    writeFileSync(join(subpath, "file.txt"), "content");
+    writeFileSync(join(repo, "root.txt"), "root");
+    commitAll(repo, "initial");
+    const cache = tempDir("kit-cache-");
+    const result = fetchCatalog({ url: repo, subdir }, cache);
+    expect(existsSync(join(result.dir, "file.txt"))).toBe(true);
+    expect(existsSync(join(result.dir, "root.txt"))).toBe(false);
+  });
+
+  it("validates sha and ref to prevent git injection", () => {
+    const repo = makeGitCatalog(FIXTURES.public);
+    const cache = tempDir("kit-cache-");
+    expect(() => fetchCatalog({ url: repo }, cache, { sha: "--orphan=x" })).toThrowError(/invalid catalog sha/);
+    expect(() => fetchCatalog({ url: repo }, cache, { sha: "HEAD" })).toThrowError(/invalid catalog sha/);
+    expect(() => fetchCatalog({ url: repo, ref: "--upload-pack=x" }, cache)).toThrowError(/invalid catalog ref/);
   });
 });
