@@ -48,9 +48,12 @@ function translate(def: ModuleDef, config: Record<string, unknown>, scope: Scope
 
     for (const hook of def.contributes.hooks) {
       const script = `kit/hooks/${module}/${hook.run.slice("hooks/".length)}`;
+      // A fail-closed hook carries its policy in the command, so that it still denies when its
+      // config file (which also records onError) is unreadable. `commandContains` is unaffected.
+      const policy = hook.onError === "deny" ? " --kit-on-error=deny" : "";
       const command = scope === "project"
-        ? `node "$CLAUDE_PROJECT_DIR"/.claude/${script}`
-        : `node "${env.home.replace(/\\/g, "/")}/.claude/${script}"`;
+        ? `node "$CLAUDE_PROJECT_DIR"/.claude/${script}${policy}`
+        : `node "${env.home.replace(/\\/g, "/")}/.claude/${script}"${policy}`;
       const matcher = TOOL_EVENTS.includes(hook.event) ? TOOL_NAMES[hook.match?.tool ?? "*"] : undefined;
       ops.push({ kind: "mergeJson", module, target: ".claude/settings.json",
                  path: ["hooks", EVENT_NAMES[hook.event]],

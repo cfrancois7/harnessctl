@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "./helpers.js";
@@ -14,25 +14,35 @@ run((ctx) => {
 });
 `;
 
+let root: string;
 let kitDir: string;
 let projectDir: string;
 
-function runHook(behavior: string, payload: object, extra: { scope?: string; onError?: "allow" | "deny" } = {}) {
-  writeFileSync(join(kitDir, "config/demo.json"), JSON.stringify({
+const DENY_FLAG = "--kit-on-error=deny";
+const configPath = () => join(kitDir, "config/demo.json");
+const hookPath = () => join(kitDir, "hooks/demo/h.mjs");
+
+function spawnHook(script: string, input: string, args: string[] = []) {
+  const result = spawnSync(process.execPath, [script, ...args], { input, encoding: "utf8" });
+  return { code: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
+}
+
+function runHook(
+  behavior: string, payload: object,
+  extra: { scope?: string; onError?: "allow" | "deny"; script?: string; args?: string[] } = {},
+) {
+  writeFileSync(configPath(), JSON.stringify({
     module: "demo", version: "1.0.0", scope: extra.scope ?? "project",
     onError: { "h.mjs": extra.onError ?? "allow" }, values: { behavior },
   }));
-  const result = spawnSync(process.execPath, [join(kitDir, "hooks/demo/h.mjs")], {
-    input: JSON.stringify({ session_id: "s1", cwd: projectDir, transcript_path: "/t.jsonl", ...payload }),
-    encoding: "utf8",
-  });
-  return { code: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
+  const input = JSON.stringify({ session_id: "s1", cwd: projectDir, transcript_path: "/t.jsonl", ...payload });
+  return spawnHook(extra.script ?? hookPath(), input, extra.args ?? []);
 }
 
 const PRE_BASH = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } };
 
 beforeEach(() => {
-  const root = tempDir("kit-runtime-");
+  root = tempDir("kit-runtime-");
   kitDir = join(root, "kit");
   projectDir = join(root, "project");
   mkdirSync(join(kitDir, "hooks/demo"), { recursive: true });
@@ -86,6 +96,51 @@ describe("claude-code hook runtime", () => {
     expect(open.stderr).toContain("boom");
     const closed = runHook("throw", PRE_BASH, { onError: "deny" });
     expect(JSON.parse(closed.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("F2a: works identically when the kit directory is reached through a symlink", () => {
+    symlinkSync(kitDir, join(root, "kit-link"));
+    const linked = join(root, "kit-link/hooks/demo/h.mjs");
+
+    // The handler really runs: its decision (from the module config) comes through unchanged.
+    expect(runHook("deny", PRE_BASH, { script: linked })).toEqual(runHook("deny", PRE_BASH));
+    expect(JSON.parse(runHook("deny", PRE_BASH, { script: linked }).stdout).hookSpecificOutput)
+      .toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "deny:pre-tool-use:shell:s1" });
+    // An allow-policy script still fails open, a deny-policy one still fails closed.
+    expect(runHook("throw", PRE_BASH, { script: linked })).toMatchObject({ code: 0, stdout: "" });
+    const closed = runHook("throw", PRE_BASH, { script: linked, onError: "deny", args: [DENY_FLAG] });
+    expect(JSON.parse(closed.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("F2b: fails closed on an unusable config or payload when the command carries the deny flag", () => {
+    const input = JSON.stringify({ session_id: "s1", cwd: projectDir, ...PRE_BASH });
+    const decision = (stdout: string) => JSON.parse(stdout).hookSpecificOutput;
+
+    rmSync(configPath(), { force: true });
+    const missing = spawnHook(hookPath(), input, [DENY_FLAG]);
+    expect(decision(missing.stdout).permissionDecision).toBe("deny");
+    expect(decision(missing.stdout).permissionDecisionReason).toContain("demo/h.mjs");
+
+    writeFileSync(configPath(), "{ not json");
+    expect(decision(spawnHook(hookPath(), input, [DENY_FLAG]).stdout).permissionDecision).toBe("deny");
+
+    writeFileSync(configPath(), JSON.stringify({ module: "demo", onError: {}, values: { behavior: "allow" } }));
+    const badStdin = spawnHook(hookPath(), "{ not json", [DENY_FLAG]);
+    expect(badStdin.code).toBe(2); // event unknown: the deny encoding for events without a decision format
+    expect(badStdin.stderr).toContain("kit hook demo/h.mjs failed");
+  });
+
+  it("F2b: the same failures fail open without the deny flag", () => {
+    const input = JSON.stringify({ session_id: "s1", cwd: projectDir, ...PRE_BASH });
+
+    rmSync(configPath(), { force: true });
+    expect(spawnHook(hookPath(), input)).toMatchObject({ code: 0, stdout: "" });
+
+    writeFileSync(configPath(), "{ not json");
+    expect(spawnHook(hookPath(), input)).toMatchObject({ code: 0, stdout: "" });
+
+    writeFileSync(configPath(), JSON.stringify({ module: "demo", onError: {}, values: { behavior: "allow" } }));
+    expect(spawnHook(hookPath(), "{ not json")).toMatchObject({ code: 0, stdout: "" });
   });
 
   it("a user-scope hook yields when the project has the same module installed", () => {

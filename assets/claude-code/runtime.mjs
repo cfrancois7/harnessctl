@@ -1,10 +1,20 @@
 // Harness Kit hook runtime for Claude Code. Copied into <scope>/.claude/kit/ and owned by the kit.
 // Node built-ins only: this file runs inside other people's projects.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Node resolves import.meta.url through symlinks, so the script path must be resolved the same
+// way: otherwise a kit directory reached through a symlink yields a module name of ".." and the
+// hook silently degrades into "allow".
 const KIT_DIR = dirname(fileURLToPath(import.meta.url));
+const realPath = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
 
 const EVENTS = {
   PreToolUse: "pre-tool-use", PostToolUse: "post-tool-use", SessionStart: "session-start",
@@ -66,15 +76,20 @@ function emit(outcome, rawEvent) {
 }
 
 export async function run(handler) {
-  const script = resolve(process.argv[1]);
+  const script = realPath(process.argv[1]);
   const [moduleName, ...rest] = relative(join(KIT_DIR, "hooks"), script).split(sep);
   const scriptKey = rest.join("/");
+  // A hook declared onError "deny" is registered with this argument, so the fail-closed policy
+  // survives a config file that cannot be read or parsed (the policy also lives in that file).
+  const denyOnError = process.argv.includes("--kit-on-error=deny");
   let settings = { scope: "project", onError: {}, values: {} };
   let raw = {};
   let outcome;
   try {
-    settings = JSON.parse(readFileSync(join(KIT_DIR, "config", `${moduleName}.json`), "utf8"));
+    // The payload first: knowing the event is what lets a failure below deny in the event's own
+    // encoding instead of falling back to exit 2.
     raw = JSON.parse(readFileSync(0, "utf8") || "{}");
+    settings = JSON.parse(readFileSync(join(KIT_DIR, "config", `${moduleName}.json`), "utf8"));
     const cwd = raw.cwd ?? process.cwd();
     if (settings.scope === "user" && projectHasModule(cwd, moduleName)) {
       outcome = allow(); // the project install of this module wins
@@ -93,7 +108,7 @@ export async function run(handler) {
     }
   } catch (error) {
     process.stderr.write(`[kit:${moduleName}] hook error: ${error?.stack ?? error}\n`);
-    outcome = settings.onError?.[scriptKey] === "deny"
+    outcome = denyOnError || settings.onError?.[scriptKey] === "deny"
       ? deny(`kit hook ${moduleName}/${scriptKey} failed: ${error?.message ?? error}`)
       : allow();
   }

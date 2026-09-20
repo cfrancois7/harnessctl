@@ -53,11 +53,24 @@ describe("claude-code adapter", () => {
         value: { matcher: "Bash", hooks: [{ type: "command",
           command: 'node "$CLAUDE_PROJECT_DIR"/.claude/kit/hooks/alpha/check.mjs' }] },
         match: { commandContains: "kit/hooks/alpha/check.mjs" } },
+      // start.mjs is declared onError "deny": the fail-closed policy travels in the command itself.
       { kind: "mergeJson", module: "alpha", target: ".claude/settings.json", path: ["hooks", "SessionStart"],
         value: { hooks: [{ type: "command",
-          command: 'node "$CLAUDE_PROJECT_DIR"/.claude/kit/hooks/alpha/start.mjs' }] },
+          command: 'node "$CLAUDE_PROJECT_DIR"/.claude/kit/hooks/alpha/start.mjs --kit-on-error=deny' }] },
         match: { commandContains: "kit/hooks/alpha/start.mjs" } },
     ]);
+  });
+
+  it("F2: marks fail-closed hooks in the command without breaking the match", () => {
+    const settings = byKind(ops, "mergeJson").filter((o) => o.target === ".claude/settings.json");
+    const command = (o: (typeof settings)[number]) =>
+      (o.value as { hooks: { command: string }[] }).hooks[0]!.command;
+    const deny = settings.find((o) => o.match!.commandContains.endsWith("start.mjs"))!;
+    const allow = settings.find((o) => o.match!.commandContains.endsWith("check.mjs"))!;
+
+    expect(command(deny).endsWith(" --kit-on-error=deny")).toBe(true);
+    expect(command(allow)).not.toContain("--kit-on-error");
+    for (const o of [deny, allow]) expect(command(o)).toContain(o.match!.commandContains);
   });
 
   it("merges MCP servers, renders instructions into a block, and scaffolds", () => {
