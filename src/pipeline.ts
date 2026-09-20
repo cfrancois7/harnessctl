@@ -186,8 +186,10 @@ export async function installModules(
     const staged = await applyPlan(ctx, ops, env);
     if (!staged) continue;
 
+    const rehashed = new Map<string, string>();
     for (const item of group) {
       const record = staged.records[item.def.name] ?? { owned: { files: [], json: [], blocks: [] }, scaffolded: [] };
+      for (const file of record.owned.files) rehashed.set(file.path, file.hash);
       const previous = ctx.lock.modules[item.def.name];
       ctx.lock.modules[item.def.name] = {
         catalog: item.def.catalog,
@@ -197,6 +199,15 @@ export async function installModules(
         scaffolded: [...new Set([...(previous?.scaffolded ?? []), ...record.scaffolded])].sort(),
       };
       ctx.lock.catalogs[item.def.catalog] = loaded.locks[item.def.catalog]!;
+    }
+    // Shared files (the runtime shim, ...) are written once but owned by several modules. Only the
+    // modules installed in this run recorded the new hash; without this, every other owner keeps a
+    // stale hash and `kit status` reports the shared file as modified for them.
+    for (const locked of Object.values(ctx.lock.modules)) {
+      for (const file of locked.owned.files) {
+        const hash = rehashed.get(file.path);
+        if (hash !== undefined) file.hash = hash;
+      }
     }
     ctx.lock.createdFiles = staged.createdFiles;
     if (profile && scope === "project") ctx.lock.profile = profile;

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
+import { hashContent } from "../src/hash.js";
 import { inHome, inProject, makeWorkspace, runKit, type Answers, type Workspace } from "./cli-helpers.js";
 import { git, snapshotTree } from "./helpers.js";
 
@@ -131,6 +132,40 @@ describe("kit add", () => {
 
     expect((await kit(["remove", "alpha", "--yes"])).code).toBe(0);
     expect(readFileSync(inProject(ws, ".mcp.json"), "utf8")).toBe(mine);
+  });
+
+  it("F4: re-records the shared runtime's hash for every module that owns it", async () => {
+    process.env.ALPHA_TOKEN = "set";
+    try {
+      await kit(["add", "alpha", "--scope", "project", "--yes"]);
+      const lockFile = inProject(ws, ".harness-kit/lock.json");
+      const runtime = inProject(ws, ".claude/kit/runtime.mjs");
+      const runtimeHash = (name: string) => {
+        const lock = readJson(lockFile);
+        return lock.modules[name].owned.files
+          .find((f: { path: string }) => f.path === ".claude/kit/runtime.mjs").hash;
+      };
+
+      // Simulate an upgraded kit: the installed runtime is an older build, recorded as such.
+      const old = "// old runtime\nexport async function run() {}\n";
+      writeFileSync(runtime, old);
+      const lock = readJson(lockFile);
+      for (const f of lock.modules.alpha.owned.files) {
+        if (f.path === ".claude/kit/runtime.mjs") f.hash = hashContent(old);
+      }
+      writeFileSync(lockFile, JSON.stringify(lock, null, 2) + "\n");
+
+      expect((await kit(["add", "beta", "--scope", "project", "--yes"])).code).toBe(0);
+      expect(readFileSync(runtime, "utf8")).not.toBe(old); // beta replaced the shared runtime
+      expect(runtimeHash("alpha")).toBe(hashContent(readFileSync(runtime, "utf8")));
+      expect(runtimeHash("beta")).toBe(runtimeHash("alpha"));
+
+      const status = await kit(["status"]);
+      expect(status.output).not.toContain(".claude/kit/runtime.mjs");
+      expect(status.code).toBe(0);
+    } finally {
+      delete process.env.ALPHA_TOKEN;
+    }
   });
 
   it("prompts for config and rejects unknown modules and unsupported scopes", async () => {
