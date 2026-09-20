@@ -1,0 +1,7 @@
+{
+  "name": "gamma",
+  "version": "0.1.0",
+  "description": "Company fixture: instructions only",
+  "scopes": ["project"],
+  "contributes": { "instructions": ["instructions/gamma.md"] }
+}

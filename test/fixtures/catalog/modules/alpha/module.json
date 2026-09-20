@@ -1,0 +1,21 @@
+{
+  "name": "alpha",
+  "version": "1.0.0",
+  "description": "Fixture exercising every contribution type",
+  "scopes": ["project"],
+  "requires": { "capabilities": ["pre-tool-hook"], "env": ["ALPHA_TOKEN"] },
+  "config": {
+    "greeting": { "type": "string", "default": "hello", "prompt": "Greeting" },
+    "areas": { "type": "string[]", "default": ["api"], "prompt": "Areas" }
+  },
+  "contributes": {
+    "skills": ["skills/alpha-skill"],
+    "hooks": [
+      { "event": "pre-tool-use", "match": { "tool": "shell" }, "run": "hooks/check.mjs" },
+      { "event": "session-start", "run": "hooks/start.mjs", "onError": "deny" }
+    ],
+    "instructions": ["instructions/alpha.md"],
+    "mcpServers": { "alpha-mcp": { "command": "alpha-mcp", "env": { "TOKEN": "${ALPHA_TOKEN}" } } },
+    "scaffold": [{ "from": "templates/docs", "to": "docs/context" }]
+  }
+}

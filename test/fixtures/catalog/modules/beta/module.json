@@ -1,0 +1,13 @@
+{
+  "name": "beta",
+  "version": "0.2.0",
+  "description": "Fixture with hooks only, both scopes",
+  "scopes": ["user", "project"],
+  "requires": { "capabilities": ["subagent-intercept"] },
+  "config": {
+    "mode": { "type": "enum", "values": ["warn", "block"], "default": "warn", "prompt": "Mode" }
+  },
+  "contributes": {
+    "hooks": [{ "event": "pre-tool-use", "match": { "tool": "subagent" }, "run": "hooks/guard.mjs" }]
+  }
+}

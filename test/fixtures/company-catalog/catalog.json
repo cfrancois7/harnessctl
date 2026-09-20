@@ -1,0 +1,1 @@
+{ "name": "company", "modules": ["modules/gamma"], "profiles": ["profiles/industrial.json"] }

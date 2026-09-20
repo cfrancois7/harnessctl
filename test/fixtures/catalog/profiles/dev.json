@@ -1,0 +1,8 @@
+{
+  "name": "dev",
+  "description": "Fixture profile",
+  "modules": {
+    "alpha": { "scope": "project", "config": { "greeting": "hi dev" } },
+    "beta": { "scope": "user" }
+  }
+}

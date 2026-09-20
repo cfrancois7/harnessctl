@@ -1,0 +1,5 @@
+{
+  "name": "industrial",
+  "description": "Company profile that bundles a public module",
+  "modules": { "alpha": {}, "gamma": {} }
+}
