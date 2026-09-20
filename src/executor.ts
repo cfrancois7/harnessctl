@@ -35,10 +35,15 @@ function lstatExists(path: string): boolean {
 
 export function resolveConfined(scopeRoot: ScopeRoot, target: string): string {
   const segments = target.split("/");
-  if (target === "" || isAbsolute(target) || target.includes("\\") || segments.includes("..") || segments.includes("")) {
+  if (
+    target === "" || isAbsolute(target) || target.includes("\\") ||
+    segments.includes("..") || segments.includes(".") || segments.includes("")
+  ) {
     throw new KitError(`unsafe target path: ${JSON.stringify(target)}`);
   }
-  if (segments[0] === ".git" || segments[0] === ".harness-kit") {
+  // Reject `.git`/`.harness-kit` anywhere in the path (nested repos/submodules), case-insensitively
+  // (macOS/Windows filesystems are case-insensitive, so `.GIT` resolves to the same directory).
+  if (segments.some((s) => { const lower = s.toLowerCase(); return lower === ".git" || lower === ".harness-kit"; })) {
     throw new KitError(`target inside a protected directory: ${target}`);
   }
   const allowed = scopeRoot.allowed.some((prefix) =>
@@ -198,9 +203,13 @@ function put(absolute: string, content: string | null, root: string): void {
   renameSync(temp, absolute);
 }
 
-function readCurrent(absolute: string): string | null {
+function readCurrent(absolute: string, target: string): string | null {
   if (!lstatExists(absolute)) return null;
-  return readFileSync(absolute, "utf8");
+  try {
+    return readFileSync(absolute, "utf8");
+  } catch (err) {
+    throw new KitError(`cannot read ${target}: ${(err as Error).message}`);
+  }
 }
 
 export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, onWrite?: (target: string) => void): void {
@@ -212,7 +221,7 @@ export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, 
       // R1: re-read before write (optimistic concurrency). Files such as ~/.claude.json can be
       // rewritten by the harness itself, and the user confirms the plan between stage() and
       // commit(), so re-check the target still matches what the plan was computed from.
-      const onDisk = readCurrent(absolute);
+      const onDisk = readCurrent(absolute, w.target);
       if (onDisk !== w.before) {
         throw new KitError(`${w.target} changed on disk after the plan was computed; nothing was changed — run the command again`);
       }
@@ -229,18 +238,28 @@ export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, 
     // R2: rollback must not mask the original error. Try every restore even if one fails, so a
     // broken restore never leaves other files un-rolled-back; only report restore failures
     // separately from (and without hiding) the error that triggered the rollback.
-    const failed: string[] = [];
+    // F3: a backup on disk only exists for targets that had a "before" (pre-existing) version;
+    // for targets that were newly created, "restoring" means removing them, and there is nothing
+    // in backupDir to point at.
+    const unrestorable: string[] = [];
+    const unremovable: string[] = [];
     for (const w of done.reverse()) {
       try {
         put(resolve(root, w.target), w.before, root);
       } catch {
-        failed.push(w.target);
+        if (w.before !== null) unrestorable.push(w.target);
+        else unremovable.push(w.target);
       }
     }
-    if (failed.length > 0) {
-      throw new KitError(
-        `${(err as Error).message}; additionally, rollback could not restore: ${failed.join(", ")} (originals saved in ${backupDir})`,
-      );
+    if (unrestorable.length > 0 || unremovable.length > 0) {
+      const parts: string[] = [];
+      if (unrestorable.length > 0) {
+        parts.push(`could not restore ${unrestorable.join(", ")} (originals saved in ${backupDir})`);
+      }
+      if (unremovable.length > 0) {
+        parts.push(`could not remove newly created ${unremovable.join(", ")}`);
+      }
+      throw new KitError(`${(err as Error).message}; additionally, rollback failed: ${parts.join("; ")}`);
     }
     throw err;
   }

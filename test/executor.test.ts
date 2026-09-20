@@ -26,14 +26,21 @@ beforeEach(() => {
 });
 
 describe("resolveConfined", () => {
-  it.each(["../x", "/etc/passwd", "a/../../x", "a\\b", "", "a//b"])("rejects %j", (target) => {
+  it.each(["../x", "/etc/passwd", "a/../../x", "a\\b", "", "a//b", "./a.txt", "a/./b"])("rejects %j", (target) => {
     expect(() => resolveConfined(scopeRoot, target)).toThrowError(KitError);
   });
 
   it("never lets a module write into .git or the kit's own state directory", () => {
     expect(() => resolveConfined(scopeRoot, ".git/hooks/pre-commit")).toThrowError(/protected directory/);
     expect(() => resolveConfined(scopeRoot, ".harness-kit/lock.json")).toThrowError(/protected directory/);
+    // F1: nested (submodule / vendored repo) and case-insensitive-filesystem variants.
+    expect(() => resolveConfined(scopeRoot, "sub/.git/hooks/pre-commit")).toThrowError(/protected directory/);
+    expect(() => resolveConfined(scopeRoot, ".GIT/hooks/pre-commit")).toThrowError(/protected directory/);
+    expect(() => resolveConfined(scopeRoot, ".Harness-Kit/lock.json")).toThrowError(/protected directory/);
+    expect(() => resolveConfined(scopeRoot, "vendor/x/.harness-kit/lock.json")).toThrowError(/protected directory/);
+    // Look-alikes must still pass.
     expect(resolveConfined(scopeRoot, ".github/workflows/ci.yml")).toBe(join(root, ".github/workflows/ci.yml"));
+    expect(resolveConfined(scopeRoot, "docs/.gitignore")).toBe(join(root, "docs/.gitignore"));
   });
 
   it("rejects a symlinked directory that escapes the root", () => {
@@ -235,5 +242,46 @@ describe("stage + commit", () => {
     expect(message).toMatch(/disk full/);
     expect(message).toMatch(/a\.txt/);
     expect(message).toContain(backupDir);
+  });
+
+  it("F2: wraps a raw fs error from the pre-write re-read as a KitError instead of letting it escape", async () => {
+    const staged = await stage([{ kind: "writeOwned", module: "m", target: "d.txt", content: "d" }], opts());
+    mkdirSync(join(root, "d.txt")); // target is now a directory, not a file
+    let thrown: unknown;
+    try {
+      commit(staged, scopeRoot, backupDir);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(KitError);
+    // Nothing else changed: the directory is still there, untouched.
+    expect(existsSync(join(root, "d.txt"))).toBe(true);
+  });
+
+  it("F3: names newly-created targets separately from backed-up ones when their rollback fails", async () => {
+    const staged = await stage([
+      { kind: "writeOwned", module: "m", target: "b.txt", content: "b" }, // new file: no backup
+      { kind: "writeOwned", module: "m", target: "c.txt", content: "c" },
+    ], opts());
+    let thrown: unknown;
+    try {
+      commit(staged, scopeRoot, backupDir, (target) => {
+        if (target === "c.txt") {
+          // b.txt was already written (content "b"); replace it with a directory so that
+          // restoring it (a deletion, since it was newly created) fails deterministically:
+          // fs.rmSync without `recursive` refuses to remove a directory.
+          rmSync(join(root, "b.txt"), { force: true });
+          mkdirSync(join(root, "b.txt"));
+          throw new Error("disk full");
+        }
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(KitError);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/disk full/);
+    expect(message).toMatch(/b\.txt/);
+    expect(message).not.toContain(backupDir); // b.txt had no backup: it was newly created
   });
 });
