@@ -4,7 +4,9 @@ import {
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { KitError } from "./errors.js";
 import { hashContent } from "./hash.js";
-import { isEmptyJson, removeJsonEntry, toPointer, upsertJsonEntry } from "./ops/json-merge.js";
+import {
+  isEmptyJson, jsonEntryValue, jsonEqual, removeJsonEntry, toPointer, upsertJsonEntry,
+} from "./ops/json-merge.js";
 import { removeBlock, upsertBlock } from "./ops/marked-block.js";
 import type { Operation, Owned } from "./types.js";
 
@@ -127,11 +129,30 @@ export async function stage(ops: Operation[], options: StageOptions): Promise<St
           rec.scaffolded.push(op.target);
         }
         break;
-      case "mergeJson":
+      case "mergeJson": {
+        // A key-addressed entry (an MCP server, ...) can already belong to the user or to another
+        // module: replacing it silently would also make the kit delete it on remove. Ask, unless
+        // the lock says this module owns it or the value is already what we would write. Entries
+        // addressed with `match` are kit-owned by construction (the match is the kit's own path).
+        if (!op.match && op.owned !== true && file.current !== null) {
+          const existing = jsonEntryValue(file.current, op.target, op.path);
+          if (existing !== undefined && !jsonEqual(existing, op.value)) {
+            const entry = `${op.target}#${toPointer(op.path)}`;
+            const decision = await options.onConflict({
+              target: entry, reason: "unowned",
+              current: JSON.stringify(existing, null, 2), incoming: JSON.stringify(op.value, null, 2),
+            });
+            if (decision === "keep") {
+              warnings.push(`kept your version of ${entry}`);
+              break;
+            }
+          }
+        }
         if (file.current === null) created.add(op.target);
         file.current = upsertJsonEntry(file.current ?? "", op.target, op.path, op.value, op.match);
         rec.owned.json.push({ file: op.target, pointer: toPointer(op.path), ...(op.match ? { match: op.match } : {}) });
         break;
+      }
       case "markedBlock":
         if (file.current === null) created.add(op.target);
         file.current = upsertBlock(file.current ?? "", op.id, op.content);

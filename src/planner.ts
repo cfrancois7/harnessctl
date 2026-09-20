@@ -60,6 +60,10 @@ function ownedHash(lock: Lockfile, target: string): string | undefined {
   return undefined;
 }
 
+/** Does the lock already record `module` as the owner of this file + pointer (no `match`)? */
+const ownsJsonEntry = (lock: Lockfile, module: string, file: string, pointer: string): boolean =>
+  (lock.modules[module]?.owned.json ?? []).some((j) => j.file === file && j.pointer === pointer && !j.match);
+
 const ownedByOthers = (lock: Lockfile, names: string[], target: string): boolean =>
   Object.entries(lock.modules).some(([other, entry]) =>
     !names.includes(other) && entry.owned.files.some((f) => f.path === target));
@@ -85,9 +89,14 @@ export function planModule(
   }
 
   const forward = adapter.translate(def, resolveConfig(def, selection.config), scope, env).map((op) => {
-    if (op.kind !== "writeOwned") return op;
-    const expectedHash = ownedHash(lock, op.target);
-    return expectedHash === undefined ? op : { ...op, expectedHash };
+    if (op.kind === "writeOwned") {
+      const expectedHash = ownedHash(lock, op.target);
+      return expectedHash === undefined ? op : { ...op, expectedHash };
+    }
+    if (op.kind === "mergeJson" && !op.match && ownsJsonEntry(lock, def.name, op.target, toPointer(op.path))) {
+      return { ...op, owned: true };
+    }
+    return op;
   });
 
   const previous = lock.modules[def.name];

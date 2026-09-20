@@ -120,6 +120,19 @@ describe("kit add", () => {
     expect(owners.sort()).toEqual(["alpha", "beta"]);
   });
 
+  it("F1: keeps an MCP server the user already had under the same name, and never removes it", async () => {
+    const mine = `{\n  "mcpServers": {\n    "alpha-mcp": { "command": "my-own-alpha" }\n  }\n}\n`;
+    writeFileSync(inProject(ws, ".mcp.json"), mine);
+
+    const r = await kit(["add", "alpha", "--scope", "project", "--yes"]);
+    expect(r.code).toBe(0);
+    expect(r.output).toContain("kept your version of .mcp.json#/mcpServers/alpha-mcp");
+    expect(readFileSync(inProject(ws, ".mcp.json"), "utf8")).toBe(mine);
+
+    expect((await kit(["remove", "alpha", "--yes"])).code).toBe(0);
+    expect(readFileSync(inProject(ws, ".mcp.json"), "utf8")).toBe(mine);
+  });
+
   it("prompts for config and rejects unknown modules and unsupported scopes", async () => {
     const r = await kit(["add", "beta"], { select: ["block"], confirm: [true] });
     expect(r.asked).toEqual(["beta › Mode", "Apply these changes to user scope?"]);

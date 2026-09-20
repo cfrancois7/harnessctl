@@ -84,6 +84,26 @@ describe("planModule", () => {
     expect(skill).toMatchObject({ expectedHash: "sha256:old" });
   });
 
+  it("F1: marks a key-addressed mergeJson owned only when this module already owns that pointer", () => {
+    const entry = { file: ".mcp.json", pointer: "/mcpServers/alpha-mcp" };
+    const mcpOp = (lock: Lockfile) =>
+      planModule({ def: alpha, config: {} }, "project", claude, env, lock)
+        .find((o) => o.kind === "mergeJson" && o.target === ".mcp.json");
+
+    const mine: Lockfile = { ...emptyLock(), modules: { alpha: moduleLock({ json: [entry] }) } };
+    expect(mcpOp(mine)).toMatchObject({ owned: true });
+
+    const theirs: Lockfile = { ...emptyLock(), modules: { beta: moduleLock({ json: [entry] }) } };
+    expect(mcpOp(theirs)).not.toHaveProperty("owned");
+    expect(mcpOp(emptyLock())).not.toHaveProperty("owned");
+
+    // Array entries addressed with `match` are kit-owned by construction: never flagged.
+    const hooks = planModule({ def: alpha, config: {} }, "project", claude, env, mine)
+      .filter((o) => o.kind === "mergeJson" && o.target === ".claude/settings.json");
+    expect(hooks.length).toBeGreaterThan(0);
+    expect(hooks.every((o) => !("owned" in o))).toBe(true);
+  });
+
   it("finds the expected hash of a shared file owned by another module", () => {
     const lock: Lockfile = { ...emptyLock(), modules: { beta: moduleLock({
       files: [{ path: ".claude/kit/runtime.mjs", hash: "sha256:rt" }] }) } };

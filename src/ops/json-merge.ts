@@ -85,6 +85,27 @@ function arrayAt(root: unknown, file: string, path: string[]): unknown[] | undef
   return value;
 }
 
+/** The value at `path`, or undefined when the file is blank or has nothing there. */
+export function jsonEntryValue(text: string, file: string, path: string[]): unknown {
+  if (text.trim() === "") return undefined;
+  return getAt(parseObject(text, file), path);
+}
+
+/** Structural equality for JSON values (object key order is irrelevant). */
+export function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((item, index) => jsonEqual(item, b[index]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => key in right && jsonEqual(left[key], right[key]));
+}
+
 export function upsertJsonEntry(text: string, file: string, path: string[], value: unknown, match?: ArrayMatch): string {
   const src = text.trim() === "" ? "{}" : text;
   const root = parseObject(src, file);

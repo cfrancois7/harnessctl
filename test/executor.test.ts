@@ -155,6 +155,68 @@ describe("stage + commit", () => {
     expect(second.createdFiles).toEqual([]);
   });
 
+  describe("F1: key-addressed JSON entries the kit does not own", () => {
+    const MINE = `{\n  "mcpServers": {\n    "github": { "command": "my-gh", "env": { "T": "1" } }\n  }\n}\n`;
+    const merge = (extra: { owned?: boolean } = {}): Operation[] => [{
+      kind: "mergeJson", module: "m", target: ".mcp.json", path: ["mcpServers", "github"],
+      value: { command: "kit-gh" }, ...extra,
+    }];
+
+    it("asks, and on keep leaves the entry byte-identical, unowned, with a warning", async () => {
+      write(".mcp.json", MINE);
+      const seen: Conflict[] = [];
+      const staged = await stage(merge(), opts(async (c) => { seen.push(c); return "keep"; }));
+      expect(seen).toEqual([{
+        target: ".mcp.json#/mcpServers/github", reason: "unowned",
+        current: JSON.stringify({ command: "my-gh", env: { T: "1" } }, null, 2),
+        incoming: JSON.stringify({ command: "kit-gh" }, null, 2),
+      }]);
+      expect(staged.writes).toEqual([]);
+      expect(staged.warnings).toEqual(["kept your version of .mcp.json#/mcpServers/github"]);
+      expect(staged.records.m!.owned.json).toEqual([]);
+      commit(staged, scopeRoot, backupDir);
+      expect(read(".mcp.json")).toBe(MINE);
+    });
+
+    it("replaces and takes ownership when the user chooses overwrite", async () => {
+      write(".mcp.json", MINE);
+      const staged = await stage(merge(), opts(overwrite));
+      expect(staged.records.m!.owned.json).toEqual([{ file: ".mcp.json", pointer: "/mcpServers/github" }]);
+      commit(staged, scopeRoot, backupDir);
+      expect(JSON.parse(read(".mcp.json")).mcpServers.github).toEqual({ command: "kit-gh" });
+    });
+
+    it("replaces without asking when the op is marked owned", async () => {
+      write(".mcp.json", MINE);
+      let asked = false;
+      const staged = await stage(merge({ owned: true }), opts(async () => { asked = true; return "keep"; }));
+      expect(asked).toBe(false);
+      expect(staged.records.m!.owned.json).toEqual([{ file: ".mcp.json", pointer: "/mcpServers/github" }]);
+      commit(staged, scopeRoot, backupDir);
+      expect(JSON.parse(read(".mcp.json")).mcpServers.github).toEqual({ command: "kit-gh" });
+    });
+
+    it("adopts an existing entry that already equals the kit's value, without asking", async () => {
+      write(".mcp.json", `{\n  "mcpServers": {\n    "github": { "command": "kit-gh" }\n  }\n}\n`);
+      const staged = await stage(merge(), opts(async () => { throw new Error("must not ask"); }));
+      expect(staged.writes).toEqual([]);
+      expect(staged.records.m!.owned.json).toEqual([{ file: ".mcp.json", pointer: "/mcpServers/github" }]);
+    });
+
+    it("still merges match-addressed array entries without asking", async () => {
+      write(".claude/settings.json",
+        `{\n  "hooks": {\n    "Stop": [{ "hooks": [{ "type": "command", "command": "echo mine" }] }]\n  }\n}\n`);
+      const staged = await stage([{
+        kind: "mergeJson", module: "m", target: ".claude/settings.json", path: ["hooks", "Stop"],
+        value: { hooks: [{ type: "command", command: "node kit/hooks/m/x.mjs" }] },
+        match: { commandContains: "kit/hooks/m/x.mjs" },
+      }], opts(async () => { throw new Error("must not ask"); }));
+      commit(staged, scopeRoot, backupDir);
+      expect(JSON.parse(read(".claude/settings.json")).hooks.Stop).toHaveLength(2);
+      expect(staged.records.m!.owned.json).toHaveLength(1);
+    });
+  });
+
   it("keeps a blank file the kit did not create", async () => {
     write(".mcp.json", "{}\n");
     const a = await stage([{ kind: "mergeJson", module: "m", target: ".mcp.json", path: ["mcpServers", "a"], value: 1 }], opts());

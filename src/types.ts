@@ -74,7 +74,12 @@ export interface ArrayMatch { commandContains: string }
 export type Operation =
   | { kind: "writeOwned"; module: string; target: string; content: string; expectedHash?: string }
   | { kind: "scaffoldOnce"; module: string; target: string; content: string }
-  | { kind: "mergeJson"; module: string; target: string; path: string[]; value: unknown; match?: ArrayMatch }
+  /**
+   * `owned` marks a key-addressed (match-less) entry the lock already records this module as
+   * owning: the executor may then replace it without asking. Set by the planner, never by an
+   * adapter. Entries addressed with `match` are kit-owned by construction.
+   */
+  | { kind: "mergeJson"; module: string; target: string; path: string[]; value: unknown; match?: ArrayMatch; owned?: boolean }
   | { kind: "markedBlock"; module: string; target: string; id: string; content: string }
   | { kind: "deleteOwned"; module: string; target: string; expectedHash: string }
   | { kind: "removeJson"; module: string; target: string; path: string[]; match?: ArrayMatch }
