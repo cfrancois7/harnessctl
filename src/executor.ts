@@ -1,5 +1,6 @@
 import {
-  lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync,
+  rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { KitError } from "./errors.js";
@@ -212,7 +213,21 @@ function pruneEmptyDirs(from: string, root: string): void {
   }
 }
 
-function put(absolute: string, content: string | null, root: string): void {
+/** The target's permission bits, or undefined when it does not exist. */
+function fileMode(absolute: string): number | undefined {
+  try {
+    return statSync(absolute).mode & 0o777;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Write through a temp file + rename. The temp file inherits the target's current mode (or the
+ * mode given, when rolling back): writing ~/.claude.json, which holds OAuth data and MCP secrets,
+ * must not turn a 0600 file into a world-readable one.
+ */
+function put(absolute: string, content: string | null, root: string, mode?: number): void {
   if (content === null) {
     rmSync(absolute, { force: true });
     pruneEmptyDirs(dirname(absolute), root);
@@ -221,7 +236,15 @@ function put(absolute: string, content: string | null, root: string): void {
   mkdirSync(dirname(absolute), { recursive: true });
   const temp = `${absolute}.kit-tmp`;
   writeFileSync(temp, content, "utf8");
-  renameSync(temp, absolute);
+  const keep = mode ?? fileMode(absolute);
+  if (keep !== undefined) chmodSync(temp, keep);
+  try {
+    renameSync(temp, absolute);
+  } catch (err) {
+    // Leave no stray temp file behind: it would also block pruneEmptyDirs during rollback.
+    rmSync(temp, { force: true });
+    throw err;
+  }
 }
 
 function readCurrent(absolute: string, target: string): string | null {
@@ -235,7 +258,9 @@ function readCurrent(absolute: string, target: string): string | null {
 
 export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, onWrite?: (target: string) => void): void {
   const root = realpathSync(scopeRoot.root);
-  const done: StagedWrite[] = [];
+  // The mode each target had before this commit, so rollback restores it too (kept local: the
+  // staged plan is computed without touching disk and says nothing about modes).
+  const done: { write: StagedWrite; mode: number | undefined }[] = [];
   try {
     for (const w of staged.writes) {
       const absolute = resolveConfined(scopeRoot, w.target);
@@ -247,12 +272,13 @@ export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, 
         throw new KitError(`${w.target} changed on disk after the plan was computed; nothing was changed — run the command again`);
       }
       if (w.before !== null) {
+        // Backups can hold the same secrets as the originals (~/.claude.json): keep them private.
         const backup = join(backupDir, w.target);
-        mkdirSync(dirname(backup), { recursive: true });
-        writeFileSync(backup, w.before, "utf8");
+        mkdirSync(dirname(backup), { recursive: true, mode: 0o700 });
+        writeFileSync(backup, w.before, { encoding: "utf8", mode: 0o600 });
       }
       onWrite?.(w.target);
-      done.push(w);
+      done.push({ write: w, mode: fileMode(absolute) });
       put(absolute, w.after, root);
     }
   } catch (err) {
@@ -264,9 +290,9 @@ export function commit(staged: Staged, scopeRoot: ScopeRoot, backupDir: string, 
     // in backupDir to point at.
     const unrestorable: string[] = [];
     const unremovable: string[] = [];
-    for (const w of done.reverse()) {
+    for (const { write: w, mode } of done.reverse()) {
       try {
-        put(resolve(root, w.target), w.before, root);
+        put(resolve(root, w.target), w.before, root, mode);
       } catch {
         if (w.before !== null) unrestorable.push(w.target);
         else unremovable.push(w.target);

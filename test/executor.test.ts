@@ -1,4 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync,
+  symlinkSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -318,6 +321,55 @@ describe("stage + commit", () => {
     expect(thrown).toBeInstanceOf(KitError);
     // Nothing else changed: the directory is still there, untouched.
     expect(existsSync(join(root, "d.txt"))).toBe(true);
+  });
+
+  describe("F3: file modes", () => {
+    const mode = (path: string) => statSync(path).mode & 0o777;
+    const secret = async (rel: string, perm: number) => {
+      write(rel, "v1");
+      chmodSync(join(root, rel), perm);
+      return stage([{ kind: "writeOwned", module: "m", target: rel, content: "v2", expectedHash: hashContent("v1") }],
+        opts());
+    };
+
+    it("keeps a private file private across an overwrite, and backs it up privately", async () => {
+      const staged = await secret(".claude.json", 0o600);
+      commit(staged, scopeRoot, backupDir);
+      expect(read(".claude.json")).toBe("v2");
+      expect(mode(join(root, ".claude.json"))).toBe(0o600);
+      expect(mode(join(backupDir, ".claude.json"))).toBe(0o600);
+      expect(mode(backupDir)).toBe(0o700);
+    });
+
+    it("keeps an executable owned file executable", async () => {
+      const staged = await secret("bin/tool.sh", 0o755);
+      commit(staged, scopeRoot, backupDir);
+      expect(mode(join(root, "bin/tool.sh"))).toBe(0o755);
+    });
+
+    it("restores the original mode when the commit is rolled back", async () => {
+      write(".claude.json", "v1");
+      chmodSync(join(root, ".claude.json"), 0o600);
+      const staged = await stage([
+        { kind: "writeOwned", module: "m", target: ".claude.json", content: "v2", expectedHash: hashContent("v1") },
+        { kind: "writeOwned", module: "m", target: "c.txt", content: "c" },
+      ], opts());
+      expect(() => commit(staged, scopeRoot, backupDir, (target) => {
+        if (target === "c.txt") throw new Error("disk full");
+      })).toThrowError(/disk full/);
+      expect(read(".claude.json")).toBe("v1");
+      expect(mode(join(root, ".claude.json"))).toBe(0o600);
+    });
+
+    it("leaves no .kit-tmp file behind when the rename fails", async () => {
+      const staged = await stage([{ kind: "writeOwned", module: "m", target: "x.txt", content: "x" }], opts());
+      expect(() => commit(staged, scopeRoot, backupDir, (target) => {
+        // Turn the target into a directory between the re-read and the write: renaming the temp
+        // file onto it fails (EISDIR), which must not strand x.txt.kit-tmp.
+        if (target === "x.txt") mkdirSync(join(root, "x.txt"));
+      })).toThrowError();
+      expect(existsSync(join(root, "x.txt.kit-tmp"))).toBe(false);
+    });
   });
 
   it("F3: names newly-created targets separately from backed-up ones when their rollback fails", async () => {
