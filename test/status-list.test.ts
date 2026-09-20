@@ -54,6 +54,33 @@ describe("kit status", () => {
     expect(r.output).toContain("warning:");
     expect(r.output).toContain("missing .claude/kit/hooks/alpha/start.mjs");
   });
+
+  it("reports a damaged block and still reports a missing owned file, instead of aborting", async () => {
+    const claudeMd = inProject(ws, "CLAUDE.md");
+    writeFileSync(claudeMd, readFileSync(claudeMd, "utf8").split("\n").filter((l) => !l.includes("kit:alpha:end")).join("\n"));
+    rmSync(inProject(ws, ".claude/kit/hooks/alpha/check.mjs"));
+
+    const r = await kit(["status"]);
+    expect(r.code).toBe(1);
+    expect(r.output).not.toMatch(/^error:/);
+    expect(r.output).toContain("no end marker");
+    expect(r.output).toContain("missing .claude/kit/hooks/alpha/check.mjs");
+  });
+
+  it("reports an unsafe owned path from the lockfile as an issue and still checks the rest", async () => {
+    const lockFile = inProject(ws, ".harness-kit/lock.json");
+    const lock = JSON.parse(readFileSync(lockFile, "utf8"));
+    lock.modules.alpha.owned.files[0].path = "../evil";
+    writeFileSync(lockFile, JSON.stringify(lock, null, 2));
+    delete process.env.ALPHA_TOKEN;
+
+    const r = await kit(["status"]);
+    expect(r.code).toBe(1);
+    expect(r.output).not.toMatch(/^error:/);
+    expect(r.output).toContain("unsafe target path");
+    expect(r.output).toContain("../evil");
+    expect(r.output).toContain("project alpha: env var ALPHA_TOKEN is not set");
+  });
 });
 
 describe("kit list", () => {
