@@ -4,7 +4,9 @@ import { addCommand } from "./commands/add.js";
 import { catalogCommand } from "./commands/catalog.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
+import { listCommand } from "./commands/list.js";
 import { removeCommand } from "./commands/remove.js";
+import { statusCommand } from "./commands/status.js";
 import { updateCommand } from "./commands/update.js";
 import { validateCommand } from "./commands/validate.js";
 import type { Command, Env } from "./env.js";
@@ -17,7 +19,9 @@ const COMMANDS: Record<string, Command> = {
   catalog: catalogCommand,
   config: configCommand,
   init: initCommand,
+  list: listCommand,
   remove: removeCommand,
+  status: statusCommand,
   update: updateCommand,
   validate: validateCommand,
 };
