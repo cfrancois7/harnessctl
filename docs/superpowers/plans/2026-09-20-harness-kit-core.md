@@ -15,7 +15,7 @@
 - Node.js ≥ 20. ESM only (`"type": "module"`). Relative imports in `src/` and `test/` end in `.js` (NodeNext resolution), even though the files are `.ts`.
 - Runtime dependencies are exactly: `zod@3`, `jsonc-parser`, `@clack/prompts`. Do not add others. Use `node:util` `parseArgs` for the CLI. Pin zod to major 3 (zod 4 changes `.default()` semantics this plan relies on).
 - Nothing from a catalog is ever executed during install, update, or remove. Modules are data.
-- Only `src/executor.ts` writes inside a scope root. Only `src/lockfile.ts` and `src/userconfig.ts` write kit state. Adapters and the planner are pure: no filesystem access.
+- Only `src/executor.ts` writes inside a scope root. Only `src/lockfile.ts` and `src/userconfig.ts` write kit state (the lockfile and the user config); the one exception is `kit remove`, which may delete a module's state directory after confirmation, as the spec requires. Adapters and the planner are pure: no filesystem access.
 - Every user-facing failure throws `KitError`; `main()` prints `error: <message>` and returns exit code 1. Never call `process.exit` outside `src/bin.ts`.
 - All paths in operations and the lockfile are POSIX-style, relative to the scope root (project scope: repo root; user scope: the home directory).
 - The home directory is always taken from `Env.home` (default `process.env.HARNESS_KIT_HOME ?? os.homedir()`), never from `os.homedir()` directly, so tests can redirect it.
@@ -29,6 +29,9 @@
 2. The spec's adapter interface translates one contribution at a time and has `paths()` / `runtimeFiles()`. Here `translate()` takes the whole module, which lets the adapter emit the shared runtime shim and the module config file once. `allowedPrefixes()` replaces `paths()`. `detect()` is omitted until a second adapter exists; `--harness` defaults to `claude-code`.
 3. "Byte-identical after remove" excludes the kit's own state directory `.harness-kit/` (lockfile, `.gitignore`, backups) as well as scaffolded files.
 4. Known limitation, accepted: when the kit removes its last entry from a JSON container it prunes empty parents. A container the user already had *empty* before install (e.g. `"PreToolUse": []`) is pruned too. A text file that did not end with a newline gains one after a marked block is added and removed.
+5. The spec says the executor reads, merges and atomically renames `~/.claude.json` "in one step immediately before writing". The kit keeps its stage/commit split (the user confirms a plan in between), so instead `commit()` re-reads every target immediately before writing it and aborts with a rollback when the file no longer matches what was staged. A concurrent write is never lost; the user re-runs the command.
+6. The lockfile has one field the spec's §5 does not list: `createdFiles`, the files the kit created through `mergeJson`/`markedBlock`, so they can be deleted again once blank.
+7. `kit catalog add|remove` edits only the kit's own source list in the user config. It does not print a plan or honour `--dry-run`; it refuses a source it cannot fetch and load.
 
 ## File Structure
 
