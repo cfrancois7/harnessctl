@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from harnessctl import planner
 from harnessctl.model import Scope
 from harnessctl.planner import (
     DeletePath,
@@ -14,6 +15,7 @@ from harnessctl.planner import (
     RunCommand,
     WriteFile,
     apply,
+    fingerprint,
     plan_diff,
     step_label,
 )
@@ -133,3 +135,112 @@ def test_plan_diff_and_labels(tmp_path):
     assert step_label(plan.steps[1], home=tmp_path) == "write  ~/n.txt"
     label = step_label(RunCommand(["claude", "plugin", "install", "a b"]))
     assert label == "run    claude plugin install 'a b'"
+
+
+# --- Review fix 1: symlinked config files ---------------------------------------------------
+
+
+def test_symlink_fingerprint_changes_when_target_content_changes(tmp_path):
+    target = write(tmp_path / "real.txt", "a")
+    link = tmp_path / "linked.txt"
+    link.symlink_to(target)
+    before = fingerprint(link)
+    target.write_text("b")
+    after = fingerprint(link)
+    assert before != after
+
+
+def test_conflict_when_symlinked_json_target_changes(tmp_path):
+    target = write(tmp_path / "real-settings.json", "{}")
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+    plan = _plan(EditJson(link, _add_key("a", 1), "a"))
+    target.write_text('{"agent": "wrote this"}')
+    with pytest.raises(PlanConflict) as exc:
+        apply(plan, tmp_path / "backups")
+    assert "real-settings.json changed since the plan was made" in str(exc.value)
+
+
+def test_edit_json_through_symlink_updates_target_keeps_link(tmp_path):
+    target = write(tmp_path / "real-settings.json", '{"a": 1}\n')
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+    result = apply(_plan(EditJson(link, _add_key("b", 2), "b")), tmp_path / "backups")
+    assert result.ok, result.error
+    assert link.is_symlink()
+    assert os.readlink(link) == str(target)
+    assert json.loads(target.read_text()) == {"a": 1, "b": 2}
+
+
+def test_write_file_through_symlink_updates_target_keeps_link(tmp_path):
+    target = write(tmp_path / "real.txt", "old")
+    link = tmp_path / "linked.txt"
+    link.symlink_to(target)
+    result = apply(_plan(WriteFile(link, b"new")), tmp_path / "backups")
+    assert result.ok, result.error
+    assert link.is_symlink()
+    assert os.readlink(link) == str(target)
+    assert target.read_text() == "new"
+
+
+def test_rollback_restores_symlink_target_and_link(tmp_path):
+    target = write(tmp_path / "real-settings.json", '{"a": 1}\n')
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+
+    def failing(argv, timeout):
+        raise PlanError("boom")
+
+    plan = _plan(EditJson(link, _add_key("b", 2), "b"), RunCommand(["x"]))
+    result = apply(plan, tmp_path / "backups", runner=failing)
+    assert not result.ok
+    assert link.is_symlink()
+    assert os.readlink(link) == str(target)
+    assert target.read_text() == '{"a": 1}\n'
+
+
+# --- Review fix 2: guarded rollback -----------------------------------------------------------
+
+
+def test_rollback_records_failed_restores_but_keeps_going(tmp_path, monkeypatch):
+    a = write(tmp_path / "a.txt", "orig-a")
+    b = write(tmp_path / "b.txt", "orig-b")
+
+    def failing(argv, timeout):
+        raise PlanError("boom")
+
+    real_restore = planner._restore
+
+    def broken_restore(path, snapshot):
+        if path == a:
+            raise OSError("disk full")
+        real_restore(path, snapshot)
+
+    monkeypatch.setattr(planner, "_restore", broken_restore)
+
+    backup_root = tmp_path / "backups"
+    plan = _plan(WriteFile(a, b"changed-a"), WriteFile(b, b"changed-b"), RunCommand(["x"]))
+    result = apply(plan, backup_root, runner=failing)
+
+    assert not result.ok
+    assert result.error.startswith("boom")
+    assert "rollback incomplete" in result.error
+    assert str(a) in result.error
+    assert "backup at" in result.error
+    assert b.read_text() == "orig-b"
+
+
+# --- Review fix 3: MovePath onto an existing destination -------------------------------------
+
+
+def test_move_onto_existing_destination_conflicts(tmp_path):
+    src = tmp_path / "skills" / "a"
+    write(src / "SKILL.md", "a")
+    dst = tmp_path / "skills" / "b"
+    write(dst / "SKILL.md", "existing-b")
+
+    result = apply(_plan(MovePath(src, dst)), tmp_path / "backups")
+    assert not result.ok
+    assert "already exists" in result.error
+    assert (src / "SKILL.md").read_text() == "a"
+    assert (dst / "SKILL.md").read_text() == "existing-b"

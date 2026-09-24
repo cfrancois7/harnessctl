@@ -87,20 +87,40 @@ def step_label(step: Step, home: Path | None = None) -> str:
             return f"run    {shlex.join(argv)}"
 
 
+def _resolved_target(path: Path) -> Path:
+    """The file a WriteFile/EditJson step actually writes to: the resolved file if `path` is a
+    symlink pointing at an existing file (so the link itself stays a link and its target gets the
+    new content), else `path` unchanged (a dangling link, a link to a directory, or a plain path)."""
+    if path.is_symlink():
+        resolved = path.resolve()
+        if resolved.is_file():
+            return resolved
+    return path
+
+
 def _touched(step: Step) -> list[Path]:
     match step:
         case MovePath(src=s, dst=d):
             return [s, d]
         case RunCommand():
             return []
+        case WriteFile(path=p) | EditJson(path=p):
+            return [_resolved_target(p)]
         case _:
             return [step.path]
 
 
 def fingerprint(path: Path) -> str | None:
-    """Content identity of a file, folder or symlink; None if nothing is there."""
+    """Content identity of a file, folder or symlink; None if nothing is there.
+
+    A symlink's identity covers both where it points and that target's own content, so a plan
+    notices when the file behind a dotfiles-style link changes underneath it — not just when the
+    link itself is repointed."""
     if path.is_symlink():
-        return "link:" + os.readlink(path)
+        link_target = os.readlink(path)
+        resolved = path.resolve()
+        target_fp = fingerprint(resolved) if resolved.exists() else None
+        return f"link:{link_target}:{target_fp}"
     if path.is_file():
         return sha256_file(path)
     if path.is_dir():
@@ -181,33 +201,44 @@ def _write_atomic(path: Path, data: bytes, like: Path | None = None) -> None:
 
 
 def _edit_json(step: EditJson) -> None:
-    text = step.path.read_text() if step.path.exists() else None
+    target = _resolved_target(step.path)
+    text = target.read_text() if target.exists() else None
     if text is not None and has_comments(text):
-        raise PlanError(f"{step.path} contains comments, which harnessctl will not rewrite")
+        raise PlanError(f"{target} contains comments, which harnessctl will not rewrite")
     try:
         data = loads_jsonc(text) if text is not None and text.strip() else None
     except ValueError as exc:
-        raise PlanError(f"{step.path} is not valid JSON: {exc}") from exc
+        raise PlanError(f"{target} is not valid JSON: {exc}") from exc
     new = step.edit(copy.deepcopy(data))
-    _write_atomic(step.path, dumps(new).encode(), like=step.path)
+    _write_atomic(target, dumps(new).encode(), like=target)
 
 
 def _run(step: Step, runner: Callable[[list[str], int], str]) -> str:
     match step:
         case WriteFile(path=p, content=c, executable=x):
-            _write_atomic(p, c, like=p)
+            target = _resolved_target(p)
+            _write_atomic(target, c, like=target)
             if x:
-                p.chmod(p.stat().st_mode | 0o111)
+                target.chmod(target.stat().st_mode | 0o111)
         case DeletePath(path=p):
             _remove(p)
         case EditJson():
             _edit_json(step)
         case MovePath(src=s, dst=d):
+            if d.exists() or d.is_symlink():
+                raise PlanError(f"{d} already exists")
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(s, d)
         case RunCommand(argv=argv, timeout=t):
             return runner(argv, t)
     return ""
+
+
+def _restore(path: Path, snapshot: Path | None) -> None:
+    """Put `path` back to what `snapshot` holds, or to absence if `snapshot` is None."""
+    _remove(path)
+    if snapshot is not None:
+        _copy(snapshot, path)
 
 
 def _prune(backup_root: Path, keep: int) -> None:
@@ -238,11 +269,17 @@ def apply(
         try:
             out = _run(step, runner)
         except Exception as exc:  # noqa: BLE001 - any failure rolls the whole plan back
-            for path, copy_ in saved.items():
-                _remove(path)
-                if copy_ is not None:
-                    _copy(copy_, path)
-            return ApplyResult(False, error=str(exc), failed_step=n, output=output)
+            failed_restores: list[Path] = []
+            for path, snapshot in saved.items():
+                try:
+                    _restore(path, snapshot)
+                except Exception:  # noqa: BLE001 - a broken restore must not hide the real error
+                    failed_restores.append(path)
+            error = str(exc)
+            if failed_restores:
+                names = ", ".join(str(p) for p in failed_restores)
+                error += f"; rollback incomplete: {names}; backup at {backup}"
+            return ApplyResult(False, error=error, failed_step=n, output=output)
         if out:
             output.append(out)
     _prune(backup_root, keep)
