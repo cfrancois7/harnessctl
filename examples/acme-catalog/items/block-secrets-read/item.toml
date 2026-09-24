@@ -1,0 +1,16 @@
+id = "block-secrets-read"
+kind = "hook"
+version = "2.0.1"
+description = "Blocks the agent from reading .env, *.pem and files under secrets/."
+tags = ["security"]
+
+[variants.claude-code]
+type = "files"
+files = { "claude/secrets.sh" = "hooks/block-secrets-read/secrets.sh" }
+
+[variants.claude-code.settings]
+hooks.PreToolUse = [{ matcher = "Read|Grep", hooks = [{ type = "command", command = "{scope_dir}/hooks/block-secrets-read/secrets.sh" }] }]
+
+[variants.opencode]
+type = "files"
+files = { "opencode/block-secrets.ts" = "plugins/block-secrets-read.ts" }

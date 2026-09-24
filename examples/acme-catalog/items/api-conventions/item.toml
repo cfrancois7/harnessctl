@@ -1,0 +1,9 @@
+id = "api-conventions"
+kind = "skill"
+version = "1.4.0"
+description = "REST API conventions for Acme services"
+tags = ["api", "backend"]
+
+[skill]
+path = "skill"
+harnesses = ["claude-code", "opencode"]

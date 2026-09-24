@@ -1,0 +1,14 @@
+id = "jira-context"
+kind = "plugin"
+version = "1.2.0"
+description = "Pulls the linked Jira ticket into the agent's context."
+
+[variants.claude-code]
+type = "claude-plugin"
+marketplace = "https://github.com/acme/claude-plugins"
+marketplace_name = "acme-plugins"
+plugin = "jira-context"
+
+[variants.opencode]
+type = "npm-plugin"
+package = "@acme/opencode-jira@1.2.0"
