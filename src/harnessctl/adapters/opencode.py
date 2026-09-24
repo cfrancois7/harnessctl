@@ -65,6 +65,7 @@ class OpencodeAdapter:
         raise PlanError("opencode has user and project scopes only" if project else "no project here")
 
     def config_path(self, scope: Scope, project: Path | None) -> Path:
+        self.scope_dir(scope, project)
         base = self.global_dir if scope is Scope.USER else project
         for name in ("opencode.json", "opencode.jsonc"):
             if (base / name).exists():
@@ -72,6 +73,7 @@ class OpencodeAdapter:
         return base / "opencode.json"
 
     def claude_skills_dir(self, scope: Scope, project: Path | None) -> Path:
+        self.scope_dir(scope, project)
         return (self.home if scope is Scope.USER else project) / ".claude" / "skills"
 
     def _reads_claude_skills(self) -> bool:

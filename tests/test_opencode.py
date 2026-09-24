@@ -22,6 +22,20 @@ def _apply(env, steps):
     assert result.ok, result.error
 
 
+def test_config_path_validates_scope(oc, env):
+    with pytest.raises(PlanError, match="no project here"):
+        oc.config_path(Scope.PROJECT, None)
+    with pytest.raises(PlanError, match="user and project scopes only"):
+        oc.config_path(Scope.LOCAL, env.project)
+
+
+def test_claude_skills_dir_validates_scope(oc, env):
+    with pytest.raises(PlanError, match="no project here"):
+        oc.claude_skills_dir(Scope.PROJECT, None)
+    with pytest.raises(PlanError, match="user and project scopes only"):
+        oc.claude_skills_dir(Scope.LOCAL, env.project)
+
+
 def test_scan_skills_plugins_and_claude_shared(oc, env):
     cfg = env.home / ".config" / "opencode"
     skill(cfg / "skills" / "own")
