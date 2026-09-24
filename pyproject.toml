@@ -37,6 +37,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 line-length = 110
 target-version = "py314"
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
