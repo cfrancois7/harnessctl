@@ -66,7 +66,9 @@ def _check_variant(item_dir: Path, harness: str, v: object) -> list[str]:
             errors.append(f"{where}: files must list at least one file")
         else:
             for src, dest in files.items():
-                if not (item_dir / src).is_file():
+                if not _safe_destination(src):
+                    errors.append(f"{where}: source {src!r} must be a relative path inside the item folder")
+                elif not (item_dir / src).is_file():
                     errors.append(f"{where}: file {src!r} not found in item folder")
                 if not _safe_destination(dest):
                     errors.append(

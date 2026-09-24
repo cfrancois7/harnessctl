@@ -89,6 +89,26 @@ hooks.PreToolUse = [{ hooks = [{ type = "command", command = "{home}/x" }] }]
     assert all(w.startswith("items/bad/item.toml: ") for w in warnings)
 
 
+def test_file_source_escaping_item_folder_is_rejected(tmp_path):
+    root = _catalog_with(
+        tmp_path,
+        """
+id = "y"
+kind = "hook"
+version = "1.0.0"
+[variants.claude-code]
+type = "files"
+files = { "/etc/passwd" = "hooks/y/leak.txt", "../outside.sh" = "hooks/y/leak2.txt" }
+""",
+    )
+    _, warnings = load_items(root, SourceFormat.CATALOG, "acme")
+    text = "\n".join(warnings)
+    assert "'/etc/passwd'" in text
+    assert "'../outside.sh'" in text
+    assert text.count("must be a relative path inside the item folder") == 2
+    assert "not found in item folder" not in text
+
+
 def test_variant_type_harness_mismatch(tmp_path):
     root = _catalog_with(
         tmp_path,
