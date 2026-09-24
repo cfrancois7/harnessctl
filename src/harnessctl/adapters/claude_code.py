@@ -7,12 +7,28 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from harnessctl.adapters.base import scan_skill_dirs
-from harnessctl.edits import hook_location
+from harnessctl.adapters.base import (
+    Install,
+    ensure_json_writable,
+    install_skill,
+    require_writable,
+    scan_skill_dirs,
+    write_payload_files,
+)
+from harnessctl.edits import expand_placeholders, hook_location, merge_hooks_edit, remove_hooks_edit
 from harnessctl.jsonio import JsonFileError, read_json
-from harnessctl.model import InstalledItem, Kind, Scope, Status
-from harnessctl.parking import scan_parked
-from harnessctl.planner import PlanError
+from harnessctl.model import (
+    CatalogItem,
+    ClaudePluginVariant,
+    FilesVariant,
+    InstalledItem,
+    Kind,
+    Scope,
+    SkillVariant,
+    Status,
+)
+from harnessctl.parking import park_dir, park_steps, scan_parked, unpark_steps
+from harnessctl.planner import DeletePath, EditJson, MovePath, PlanError, RunCommand, Step
 
 
 def _command_name(command: str) -> str:
@@ -205,3 +221,111 @@ class ClaudeCodeAdapter:
             child.parent = pid
             child.enabled = on
         return [plugin, *children]
+
+    # --- changes -----------------------------------------------------------------------------
+
+    def plan_install(
+        self, item: CatalogItem, scope: Scope, project: Path | None, replace: bool = False
+    ) -> Install:
+        variant = item.variants.get(self.id)
+        if variant is None:
+            raise PlanError(f"{item.id} has no Claude Code variant")
+        scope_dir = self.scope_dir(scope, project)
+        match variant:
+            case SkillVariant(path=src):
+                return install_skill(src, scope_dir / "skills" / item.id, replace)
+            case FilesVariant():
+                return self._install_files(variant, scope, project, replace)
+            case ClaudePluginVariant():
+                return self._install_plugin(variant, scope)
+        raise PlanError(f"{type(variant).__name__} variants are not supported for Claude Code")
+
+    def _install_files(
+        self, variant: FilesVariant, scope: Scope, project: Path | None, replace: bool
+    ) -> Install:
+        scope_dir = self.scope_dir(scope, project)
+        steps, hashes = write_payload_files(variant.files, scope_dir, replace)
+        settings = expand_placeholders(variant.settings, scope_dir)
+        locations: list[str] = []
+        hooks = settings.get("hooks", {})
+        if hooks:
+            path = self.settings_path(scope, project)
+            ensure_json_writable(path)
+            count = sum(len(g.get("hooks", [])) for groups in hooks.values() for g in groups)
+            steps.append(EditJson(path, merge_hooks_edit(hooks), f"hooks +{count}"))
+            for event, groups in hooks.items():
+                for group in groups:
+                    locations += [hook_location(path, event, h["command"]) for h in group.get("hooks", [])]
+        return Install(steps, locations, hashes, settings)
+
+    def _install_plugin(self, variant: ClaudePluginVariant, scope: Scope) -> Install:
+        if self._which("claude") is None:
+            raise PlanError("the claude CLI is not on PATH, so plugins cannot be installed")
+        try:
+            markets = read_json(self.claude_dir / "plugins" / "known_marketplaces.json", default={})
+        except JsonFileError:
+            markets = {}
+        steps: list[Step] = []
+        if variant.marketplace_name not in markets:
+            steps.append(RunCommand(["claude", "plugin", "marketplace", "add", variant.marketplace_url]))
+        steps.append(RunCommand(["claude", "plugin", "install", variant.plugin_id, "--scope", scope.value]))
+        return Install(steps, [f"claude-plugin:{variant.plugin_id}"], {})
+
+    def plan_remove(self, inst: InstalledItem, project: Path | None) -> list[Step]:
+        require_writable(inst)
+        if inst.meta.get("park_dir"):
+            return [DeletePath(Path(inst.meta["park_dir"]))]
+        match inst.kind:
+            case Kind.SKILL:
+                return [DeletePath(Path(inst.location))]
+            case Kind.HOOK:
+                path = Path(inst.meta["settings"])
+                ensure_json_writable(path)
+                return [
+                    EditJson(
+                        path,
+                        remove_hooks_edit(inst.meta["event"], inst.meta["command"]),
+                        f"hooks −1 ({inst.meta['event']})",
+                    )
+                ]
+            case Kind.PLUGIN:
+                return [
+                    RunCommand(
+                        ["claude", "plugin", "uninstall", inst.meta["plugin_id"], "--scope", inst.scope.value]
+                    )
+                ]
+
+    def plan_toggle(self, inst: InstalledItem, project: Path | None) -> list[Step]:
+        require_writable(inst)
+        if inst.kind is Kind.PLUGIN:
+            verb = "disable" if inst.enabled else "enable"
+            return [
+                RunCommand(["claude", "plugin", verb, inst.meta["plugin_id"], "--scope", inst.scope.value])
+            ]
+        if not inst.enabled:
+            return unpark_steps(inst)
+        scope_dir = self.scope_dir(inst.scope, project)
+        pdir = park_dir(self.parking, self.id, inst.location, inst.name)
+        if inst.kind is Kind.SKILL:
+            return park_steps(
+                inst,
+                pdir,
+                scope_dir,
+                {"type": "move", "to": inst.location},
+                [MovePath(Path(inst.location), pdir / "payload")],
+            )
+        path = Path(inst.meta["settings"])
+        ensure_json_writable(path)
+        restore = {
+            "type": "hook",
+            "settings": str(path),
+            "event": inst.meta["event"],
+            "matcher": inst.meta.get("matcher"),
+            "hook": inst.meta["hook"],
+        }
+        take_out = EditJson(
+            path,
+            remove_hooks_edit(inst.meta["event"], inst.meta["command"]),
+            f"hooks −1 ({inst.meta['event']}, parked)",
+        )
+        return park_steps(inst, pdir, scope_dir, restore, [take_out])
