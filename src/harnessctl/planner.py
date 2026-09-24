@@ -1,0 +1,272 @@
+"""Plans: the exact steps a change makes, applied all-or-nothing."""
+
+from __future__ import annotations
+
+import copy
+import difflib
+import hashlib
+import os
+import shlex
+import shutil
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from harnessctl.jsonio import dumps, has_comments, loads_jsonc, sha256_file
+from harnessctl.model import Scope
+
+
+class PlanError(Exception):
+    """A change that cannot be planned or a step that failed; the message says why."""
+
+
+class PlanConflict(Exception):
+    """A file the plan touches changed between planning and applying."""
+
+
+@dataclass
+class WriteFile:
+    path: Path
+    content: bytes
+    executable: bool = False
+
+
+@dataclass
+class DeletePath:
+    path: Path  # file, folder or symlink (a symlink is unlinked, never followed)
+
+
+@dataclass
+class EditJson:
+    path: Path
+    edit: Callable[[Any], Any]  # receives the parsed file (None if missing) and returns the new data
+    description: str
+
+
+@dataclass
+class MovePath:
+    src: Path
+    dst: Path
+
+
+@dataclass
+class RunCommand:
+    argv: list[str]
+    timeout: int = 120
+
+
+Step = WriteFile | DeletePath | EditJson | MovePath | RunCommand
+
+_SYMBOL = {WriteFile: "+", DeletePath: "−", EditJson: "~", MovePath: "→", RunCommand: "$"}
+
+
+def step_symbol(step: Step) -> str:
+    return _SYMBOL[type(step)]
+
+
+def _show(path: Path, home: Path | None) -> str:
+    if home is not None and path.is_relative_to(home):
+        return "~/" + path.relative_to(home).as_posix()
+    return str(path)
+
+
+def step_label(step: Step, home: Path | None = None) -> str:
+    match step:
+        case WriteFile(path=p):
+            return f"write  {_show(p, home)}"
+        case DeletePath(path=p):
+            return f"remove {_show(p, home)}"
+        case EditJson(path=p, description=d):
+            return f"merge  {_show(p, home)}  {d}"
+        case MovePath(src=s, dst=d):
+            return f"move   {_show(s, home)} → {_show(d, home)}"
+        case RunCommand(argv=argv):
+            return f"run    {shlex.join(argv)}"
+
+
+def _touched(step: Step) -> list[Path]:
+    match step:
+        case MovePath(src=s, dst=d):
+            return [s, d]
+        case RunCommand():
+            return []
+        case _:
+            return [step.path]
+
+
+def fingerprint(path: Path) -> str | None:
+    """Content identity of a file, folder or symlink; None if nothing is there."""
+    if path.is_symlink():
+        return "link:" + os.readlink(path)
+    if path.is_file():
+        return sha256_file(path)
+    if path.is_dir():
+        h = hashlib.sha256()
+        for p in sorted(path.rglob("*")):
+            rel = p.relative_to(path).as_posix()
+            if p.is_symlink():
+                h.update(f"L{rel}->{os.readlink(p)}\n".encode())
+            elif p.is_file():
+                h.update(f"F{rel}:{sha256_file(p)}\n".encode())
+        return "dir:" + h.hexdigest()
+    return None
+
+
+@dataclass
+class Plan:
+    title: str
+    harness: str
+    scope: Scope
+    steps: list[Step]
+    reload_hint: str = ""
+    preimages: dict[Path, str | None] = field(default_factory=dict)
+
+    @classmethod
+    def build(cls, title: str, harness: str, scope: Scope, steps: list[Step], reload_hint: str = "") -> Plan:
+        plan = cls(title, harness, scope, list(steps), reload_hint)
+        plan.preimages = {p: fingerprint(p) for s in plan.steps for p in _touched(s)}
+        return plan
+
+
+@dataclass
+class ApplyResult:
+    ok: bool
+    error: str | None = None
+    failed_step: int | None = None  # index into plan.steps
+    output: list[str] = field(default_factory=list)
+
+
+def run_command(argv: list[str], timeout: int) -> str:
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
+        )
+    except FileNotFoundError as exc:
+        raise PlanError(f"{argv[0]}: command not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PlanError(f"{shlex.join(argv)} timed out after {timeout}s") from exc
+    if result.returncode:
+        msg = (result.stderr or result.stdout).strip() or f"{argv[0]} exited with {result.returncode}"
+        raise PlanError(msg)
+    return result.stdout.strip()
+
+
+def _remove(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _copy(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_symlink():
+        os.symlink(os.readlink(src), dst)
+    elif src.is_dir():
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
+def _write_atomic(path: Path, data: bytes, like: Path | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.harnessctl-tmp")
+    tmp.write_bytes(data)
+    if like is not None and like.exists():
+        shutil.copymode(like, tmp)
+    os.replace(tmp, path)
+
+
+def _edit_json(step: EditJson) -> None:
+    text = step.path.read_text() if step.path.exists() else None
+    if text is not None and has_comments(text):
+        raise PlanError(f"{step.path} contains comments, which harnessctl will not rewrite")
+    try:
+        data = loads_jsonc(text) if text is not None and text.strip() else None
+    except ValueError as exc:
+        raise PlanError(f"{step.path} is not valid JSON: {exc}") from exc
+    new = step.edit(copy.deepcopy(data))
+    _write_atomic(step.path, dumps(new).encode(), like=step.path)
+
+
+def _run(step: Step, runner: Callable[[list[str], int], str]) -> str:
+    match step:
+        case WriteFile(path=p, content=c, executable=x):
+            _write_atomic(p, c, like=p)
+            if x:
+                p.chmod(p.stat().st_mode | 0o111)
+        case DeletePath(path=p):
+            _remove(p)
+        case EditJson():
+            _edit_json(step)
+        case MovePath(src=s, dst=d):
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(s, d)
+        case RunCommand(argv=argv, timeout=t):
+            return runner(argv, t)
+    return ""
+
+
+def _prune(backup_root: Path, keep: int) -> None:
+    runs = sorted(p for p in backup_root.iterdir() if p.is_dir())
+    for old in runs[:-keep]:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def apply(
+    plan: Plan, backup_root: Path, runner: Callable[[list[str], int], str] = run_command, keep: int = 20
+) -> ApplyResult:
+    changed = [p for p, fp in plan.preimages.items() if fingerprint(p) != fp]
+    if changed:
+        raise PlanConflict(f"{changed[0].name} changed since the plan was made ({changed[0]}) — re-plan?")
+
+    backup = backup_root / datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    backup.mkdir(parents=True, mode=0o700)
+    saved: dict[Path, Path | None] = {}
+    for n, path in enumerate(plan.preimages):
+        if path.exists() or path.is_symlink():
+            _copy(path, backup / str(n))
+            saved[path] = backup / str(n)
+        else:
+            saved[path] = None
+
+    output: list[str] = []
+    for n, step in enumerate(plan.steps):
+        try:
+            out = _run(step, runner)
+        except Exception as exc:  # noqa: BLE001 - any failure rolls the whole plan back
+            for path, copy_ in saved.items():
+                _remove(path)
+                if copy_ is not None:
+                    _copy(copy_, path)
+            return ApplyResult(False, error=str(exc), failed_step=n, output=output)
+        if out:
+            output.append(out)
+    _prune(backup_root, keep)
+    return ApplyResult(True, output=output)
+
+
+def plan_diff(plan: Plan) -> str:
+    """Unified diff of every file the plan writes or edits, against what is on disk now."""
+    chunks: list[str] = []
+    for step in plan.steps:
+        if isinstance(step, WriteFile):
+            old = step.path.read_text(errors="replace") if step.path.is_file() else ""
+            new = step.content.decode(errors="replace")
+        elif isinstance(step, EditJson):
+            old = step.path.read_text() if step.path.is_file() else ""
+            try:
+                new = dumps(step.edit(copy.deepcopy(loads_jsonc(old) if old.strip() else None)))
+            except Exception as exc:  # noqa: BLE001 - a preview must never crash the UI
+                new = f"<cannot preview: {exc}>\n"
+        else:
+            continue
+        chunks.extend(
+            difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True), f"a{step.path}", f"b{step.path}"
+            )
+        )
+    return "".join(chunks) or "(no file contents change)\n"
