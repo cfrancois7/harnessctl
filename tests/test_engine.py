@@ -1,11 +1,12 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from harnessctl.config import ConfigError
 from harnessctl.model import Kind, Scope, Status
-from harnessctl.planner import PlanError
-from tests.helpers import EXAMPLES, commit_all, make_repo, skill, write
+from harnessctl.planner import DeletePath, PlanError
+from tests.helpers import EXAMPLES, commit_all, make_repo, skill, stub_command, write
 
 
 @pytest.fixture
@@ -151,3 +152,47 @@ def test_unavailable_source_is_kept(env, tmp_path):
     engine.load_sources(fetch=True)
     assert [s.status for s in engine.sources] == ["unavailable"]
     assert engine.catalog("claude-code") == []
+
+
+def test_install_refuses_truncated_lock_before_running_anything(env, acme, tmp_path):
+    calls: list[list[str]] = []
+
+    def runner(argv, timeout):
+        calls.append(argv)
+        return ""
+
+    stub_command(env.bin, "claude", tmp_path / "claude-calls.log")
+    e = env.engine(runner=runner)
+    e.load_sources(fetch=True)
+    write(env.paths.user_lock, '{"version": 1, "entries": [')  # truncated JSON
+    item = e.find_item("acme", "jira-context")
+    with pytest.raises(PlanError, match="lock.json"):
+        e.plan_install(item, "claude-code", Scope.USER)
+    assert calls == []
+
+
+def test_install_refuses_non_dict_lock_without_touching_it(engine, env):
+    write(env.paths.user_lock, "[1, 2]")
+    before = env.paths.user_lock.read_text()
+    with pytest.raises(PlanError, match="lock.json"):
+        engine.plan_install(_item(engine, "api-conventions"), "claude-code", Scope.USER)
+    assert env.paths.user_lock.read_text() == before
+
+
+def test_remove_only_deletes_files_inside_the_scope_dir(engine, env):
+    engine.apply(engine.plan_install(_item(engine, "block-secrets-read"), "claude-code", Scope.USER))
+    victim = env.home / "victim.txt"
+    victim.write_text("precious")
+    lock_path = env.paths.user_lock
+    lock = json.loads(lock_path.read_text())
+    lock["entries"][0]["files"][str(victim)] = "deadbeef"
+    lock_path.write_text(json.dumps(lock))
+
+    inst = _installed(engine, "block-secrets-read")
+    plan = engine.plan_remove(inst)
+    assert not any(isinstance(s, DeletePath) and Path(s.path) == victim for s in plan.steps)
+    assert any("victim.txt" in msg for msg in engine.lock_errors)
+
+    assert engine.apply(plan).ok
+    assert victim.exists()
+    assert not (env.home / ".claude" / "hooks" / "block-secrets-read" / "secrets.sh").exists()

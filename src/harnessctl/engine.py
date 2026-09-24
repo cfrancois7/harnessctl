@@ -11,7 +11,7 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-from harnessctl.adapters.base import Adapter
+from harnessctl.adapters.base import Adapter, ensure_json_writable
 from harnessctl.adapters.claude_code import ClaudeCodeAdapter
 from harnessctl.adapters.opencode import OpencodeAdapter
 from harnessctl.config import (
@@ -233,10 +233,20 @@ class Engine:
     def _commit_of(self, source: str) -> str | None:
         return next((s.commit for s in self.sources if s.spec.name == source), None)
 
+    def _check_lock_writable(self, path: Path) -> None:
+        """A lock harnessctl cannot safely read back and rewrite must block planning, not
+        just fail partway through apply (after side effects such as `claude plugin ...` ran)."""
+        try:
+            read_lock(path)
+        except JsonFileError as exc:
+            raise PlanError(str(exc)) from exc
+        ensure_json_writable(path)
+
     def plan_install(self, item: CatalogItem, harness: str, scope: Scope, replace: bool = False) -> Plan:
         adapter = self.adapter(harness)
         if item.variants.get(harness) is None:
             raise PlanError(f"{item.id} has no {adapter.label} variant")
+        self._check_lock_writable(self.lock_path(scope))
         inst = adapter.plan_install(item, scope, self.project, replace=replace)
         entry = LockEntry(
             item_id=item.id,
@@ -253,9 +263,19 @@ class Engine:
         steps = [*inst.steps, EditJson(self.lock_path(scope), add_entry_edit(entry), f"record {item.id}")]
         return Plan.build(f"Install {item.id} → {scope}", harness, scope, steps, adapter.reload_hint)
 
+    def _scope_dir_for(self, harness: str, scope: Scope) -> Path | None:
+        """The folder a lock entry's files must live under to be safe to delete. None if the
+        adapter cannot resolve a scope dir here (e.g. no project) — nothing outside is then safe."""
+        try:
+            return self.adapter(harness).scope_dir(scope, self.project).resolve()
+        except PlanError:
+            return None
+
     def plan_remove(self, inst: InstalledItem) -> Plan:
         adapter = self.adapter(inst.harness)
         entry: LockEntry | None = inst.meta.get("lock")
+        if entry is not None:
+            self._check_lock_writable(self.lock_path(inst.scope))
         targets = [inst]
         if entry is not None:
             targets = [
@@ -266,10 +286,18 @@ class Engine:
         steps = [s for t in targets for s in adapter.plan_remove(t, self.project)]
         if entry is not None:
             covered = [s.path for s in steps if isinstance(s, DeletePath)]
+            scope_dir = self._scope_dir_for(inst.harness, inst.scope)
             for f in entry.files:
                 path = Path(f)
-                if (path.exists() or path.is_symlink()) and not any(path.is_relative_to(c) for c in covered):
+                if not (path.exists() or path.is_symlink()) or any(path.is_relative_to(c) for c in covered):
+                    continue
+                if scope_dir is not None and path.resolve().is_relative_to(scope_dir):
                     steps.append(DeletePath(path))
+                else:
+                    self.lock_errors.append(
+                        f"{entry.item_id}: {path} is outside the {inst.scope} scope and was left in place "
+                        "(the lock entry may have been tampered with)"
+                    )
             steps.append(
                 EditJson(self.lock_path(inst.scope), remove_entry_edit(entry), f"forget {entry.item_id}")
             )
