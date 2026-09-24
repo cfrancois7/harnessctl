@@ -158,7 +158,7 @@ def test_conflict_when_symlinked_json_target_changes(tmp_path):
     target.write_text('{"agent": "wrote this"}')
     with pytest.raises(PlanConflict) as exc:
         apply(plan, tmp_path / "backups")
-    assert "real-settings.json changed since the plan was made" in str(exc.value)
+    assert "settings.json changed since the plan was made" in str(exc.value)
 
 
 def test_edit_json_through_symlink_updates_target_keeps_link(tmp_path):
@@ -244,3 +244,61 @@ def test_move_onto_existing_destination_conflicts(tmp_path):
     assert "already exists" in result.error
     assert (src / "SKILL.md").read_text() == "a"
     assert (dst / "SKILL.md").read_text() == "existing-b"
+
+
+# --- Review re-fix: repointed/replaced symlink between Plan.build and apply -------------------
+
+
+def test_conflict_when_symlink_is_repointed_before_apply(tmp_path):
+    a = write(tmp_path / "a.json", '{"a": 1}\n')
+    b = write(tmp_path / "b.json", '{"b": 1}\n')
+    link = tmp_path / "settings.json"
+    link.symlink_to(a)
+    plan = _plan(EditJson(link, _add_key("x", 1), "x"))
+
+    link.unlink()
+    link.symlink_to(b)
+
+    with pytest.raises(PlanConflict):
+        apply(plan, tmp_path / "backups")
+    assert json.loads(a.read_text()) == {"a": 1}
+    assert json.loads(b.read_text()) == {"b": 1}
+
+
+def test_conflict_when_symlink_replaced_by_regular_file_before_apply(tmp_path):
+    target = write(tmp_path / "real-settings.json", '{"a": 1}\n')
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+    plan = _plan(EditJson(link, _add_key("x", 1), "x"))
+
+    link.unlink()
+    write(link, '{"agent": "wrote this"}')
+
+    with pytest.raises(PlanConflict):
+        apply(plan, tmp_path / "backups")
+    assert link.read_text() == '{"agent": "wrote this"}'
+    assert target.read_text() == '{"a": 1}\n'
+
+
+def test_conflict_when_symlink_is_repointed_during_apply(tmp_path):
+    """Defence in depth: a repoint that happens *during* apply (e.g. an earlier step's side
+    effect, or a race that lands after the up-front conflict check but before this step runs)
+    is still caught, right before the step that would otherwise write through the stale link."""
+    a = write(tmp_path / "a.json", '{"a": 1}\n')
+    b = write(tmp_path / "b.json", '{"b": 1}\n')
+    link = tmp_path / "settings.json"
+    link.symlink_to(a)
+
+    def repoint_then_ok(argv, timeout):
+        link.unlink()
+        link.symlink_to(b)
+        return "ran"
+
+    plan = _plan(RunCommand(["noop"]), EditJson(link, _add_key("x", 1), "x"))
+    result = apply(plan, tmp_path / "backups", runner=repoint_then_ok)
+
+    assert not result.ok
+    assert "changed since the plan was made" in result.error
+    assert link.is_symlink() and os.readlink(link) == str(a)
+    assert json.loads(a.read_text()) == {"a": 1}
+    assert json.loads(b.read_text()) == {"b": 1}

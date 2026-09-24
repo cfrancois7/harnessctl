@@ -105,7 +105,8 @@ def _touched(step: Step) -> list[Path]:
         case RunCommand():
             return []
         case WriteFile(path=p) | EditJson(path=p):
-            return [_resolved_target(p)]
+            target = _resolved_target(p)
+            return [p] if target == p else [p, target]
         case _:
             return [step.path]
 
@@ -143,11 +144,20 @@ class Plan:
     steps: list[Step]
     reload_hint: str = ""
     preimages: dict[Path, str | None] = field(default_factory=dict)
+    # Step index -> the file a WriteFile/EditJson step resolved to at build time (itself, unless
+    # its path was a symlink to a file). Lets apply() notice a repoint or a link-to-regular-file
+    # swap right before that step runs, in addition to the up-front check over `preimages`.
+    write_targets: dict[int, Path] = field(default_factory=dict)
 
     @classmethod
     def build(cls, title: str, harness: str, scope: Scope, steps: list[Step], reload_hint: str = "") -> Plan:
         plan = cls(title, harness, scope, list(steps), reload_hint)
         plan.preimages = {p: fingerprint(p) for s in plan.steps for p in _touched(s)}
+        plan.write_targets = {
+            i: _resolved_target(s.path)
+            for i, s in enumerate(plan.steps)
+            if isinstance(s, WriteFile | EditJson)
+        }
         return plan
 
 
@@ -267,6 +277,10 @@ def apply(
     output: list[str] = []
     for n, step in enumerate(plan.steps):
         try:
+            if n in plan.write_targets and _resolved_target(step.path) != plan.write_targets[n]:
+                raise PlanConflict(
+                    f"{step.path.name} changed since the plan was made ({step.path}) — re-plan?"
+                )
             out = _run(step, runner)
         except Exception as exc:  # noqa: BLE001 - any failure rolls the whole plan back
             failed_restores: list[Path] = []
