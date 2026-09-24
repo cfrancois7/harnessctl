@@ -140,6 +140,17 @@ def test_skill_with_bad_frontmatter_still_listed(claude, env):
     assert weird.meta["description"] == "(no description)"
 
 
+def test_broken_known_marketplaces_reported_correctly(claude, env):
+    # When known_marketplaces.json is corrupt, the BROKEN item should refer to it, not installed_plugins.json
+    write(env.home / ".claude" / "plugins" / "known_marketplaces.json", "{bad")
+    items = claude.scan(Scope.USER, env.project)
+    broken = [i for i in items if i.status is Status.BROKEN]
+    assert broken and "known_marketplaces.json" in broken[0].error
+    assert "known_marketplaces.json" in broken[0].location
+    # Verify installed_plugins.json is still valid and not reported as broken
+    assert "installed_plugins.json" not in broken[0].location
+
+
 def test_detect_and_watched_paths(claude, env):
     assert claude.detect() is True
     paths = claude.watched_paths(env.project)

@@ -156,9 +156,12 @@ class ClaudeCodeAdapter:
         plugins_dir = self.claude_dir / "plugins"
         try:
             installed = read_json(plugins_dir / "installed_plugins.json", default={}).get("plugins", {})
+        except JsonFileError as exc:
+            return [self._broken(scope, exc.path, Kind.PLUGIN, exc)]
+        try:
             markets = read_json(plugins_dir / "known_marketplaces.json", default={})
-        except (JsonFileError, AttributeError) as exc:
-            return [self._broken(scope, plugins_dir / "installed_plugins.json", Kind.PLUGIN, exc)]
+        except JsonFileError as exc:
+            return [self._broken(scope, exc.path, Kind.PLUGIN, exc)]
         try:
             enabled = read_json(self.settings_path(scope, project), default={}).get("enabledPlugins", {})
         except JsonFileError, AttributeError:
