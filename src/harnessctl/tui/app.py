@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Resize
 from textual.widgets import Footer, Static, TabbedContent, TabPane
+from textual.worker import get_current_worker
 
 from harnessctl.engine import CatalogEntry, Engine
 from harnessctl.model import InstalledItem
@@ -74,6 +75,7 @@ class HarnessApp(App[None]):
         self.narrow = False
         self.last_outcome = ""
         self._signature: tuple | None = None
+        self._shown_lock_errors: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -137,19 +139,37 @@ class HarnessApp(App[None]):
 
     @work(thread=True, exclusive=True, group="scan")
     def rescan(self) -> None:
+        # Capture the harness up front: if the user switches harnesses while this scan is
+        # in flight, self.harness may already point at the new one by the time we finish.
+        harness = self.harness
         signature = self._current_signature()
         snap = Snapshot(
-            self.engine.installed(self.harness), self.engine.catalog(self.harness), list(self.engine.sources)
+            self.engine.installed(harness), self.engine.catalog(harness), list(self.engine.sources)
         )
+        lock_errors = list(self.engine.lock_errors)
+        # A newer rescan (harness switch, poll, manual `r`) may have superseded this one
+        # while installed()/catalog() were running on this thread — cancellation of a
+        # thread worker doesn't stop the thread, it only marks it cancelled. Don't paint
+        # stale data over whatever the newer scan already showed.
+        if get_current_worker().is_cancelled:
+            return
         self._signature = signature
-        self.call_from_thread(self._show, snap)
+        self.call_from_thread(self._show, snap, lock_errors)
 
-    def _show(self, snap: Snapshot) -> None:
+    def _show(self, snap: Snapshot, lock_errors: list[str]) -> None:
         self.snapshot = snap
         self._update_header()
         self.query_one(InstalledView).show(snap.installed)
         self.query_one(CatalogView).show(snap.catalog)
         self.query_one(SourcesView).show(snap.sources)
+        # `Engine.lock_errors` is refilled by any concurrently-running scan (it's shared,
+        # unsynchronized engine state), so the same message can show up twice in one capture;
+        # de-duplicate within this call as well as against what was last shown.
+        unique_errors = list(dict.fromkeys(lock_errors))
+        for error in unique_errors:
+            if error not in self._shown_lock_errors:
+                self.notify(error, title="Lock file", severity="warning", timeout=10)
+        self._shown_lock_errors = set(unique_errors)
 
     def _update_header(self) -> None:
         home = self.engine.paths.home

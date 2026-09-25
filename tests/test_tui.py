@@ -1,8 +1,13 @@
+import asyncio
+import copy
+import threading
+
+import pytest
 from textual.widgets import Static, TabbedContent
 
 from harnessctl.tui.modals import DetailScreen
 from harnessctl.tui.views import CatalogView, DetailPane, InstalledView, ItemList
-from tests.helpers import settle, skill
+from tests.helpers import settle, skill, write
 
 
 def _names(app, view=InstalledView):
@@ -89,3 +94,63 @@ async def test_file_changes_trigger_a_rescan(tui):
         app.poll_changes()
         await settle(pilot)
         assert "fresh" in _names(app)
+
+
+async def test_superseded_rescan_does_not_paint(tui):
+    """A scan started before a newer one must not overwrite the newer scan's result, even if
+    the older scan's engine calls happen to finish later (the thread keeps running after its
+    worker is marked cancelled)."""
+    app = tui.app()
+    release = threading.Event()
+    calls: list[str] = []
+    real_installed = app.engine.installed
+    stale_items = copy.deepcopy(real_installed("claude-code"))
+    for item in stale_items:
+        item.name = f"stale-{item.name}"
+
+    def fake_installed(harness: str):
+        idx = len(calls)
+        calls.append(harness)
+        if idx == 0:
+            release.wait(5)  # block the first (soon-to-be-superseded) scan in flight
+            return stale_items
+        return real_installed(harness)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        app.engine.installed = fake_installed
+
+        app.rescan()  # scan #1: will block inside installed()
+        await asyncio.sleep(0.1)  # let its thread actually start and hit the block
+        app.rescan()  # scan #2: exclusive, supersedes #1 in the "scan" group
+
+        for _ in range(50):
+            await pilot.pause()
+            if app.snapshot.installed and app.snapshot.installed != stale_items:
+                break
+        else:
+            pytest.fail("the newer scan never landed")
+
+        release.set()  # let the stale scan's thread body finish running
+        await settle(pilot)
+        # the stale scan must not have painted over the newer, correct result
+        assert _names(app) == ["api-conventions", "my-notes"]
+        assert app.snapshot.installed != stale_items
+
+
+async def test_broken_lock_file_toasts_once(tui):
+    write(tui.env.paths.user_lock, "[1, 2]")
+    app = tui.app()
+    notifications: list[tuple[str, str]] = []
+    app.notify = lambda message, **kw: notifications.append((message, kw.get("severity")))
+
+    def warnings():
+        return [m for m, severity in notifications if severity == "warning" and "lock.json" in m]
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        assert len(warnings()) == 1
+
+        app.rescan()
+        await settle(pilot)
+        assert len(warnings()) == 1  # not re-toasted on a second scan of the same broken file
