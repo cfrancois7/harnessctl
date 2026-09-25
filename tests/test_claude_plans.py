@@ -19,7 +19,9 @@ def claude(env):
 
 def _apply(env, steps):
     result = apply(
-        Plan.build("t", "claude-code", Scope.USER, steps), env.paths.backups, runner=lambda argv, timeout: ""
+        Plan.build("t", "claude-code", Scope.USER, steps),
+        env.paths.backups,
+        runner=lambda argv, timeout, cwd: "",
     )
     assert result.ok, result.error
 

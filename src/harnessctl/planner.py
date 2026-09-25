@@ -56,6 +56,7 @@ class MovePath:
 class RunCommand:
     argv: list[str]
     timeout: int = 120
+    cwd: Path | None = None  # e.g. the project, for `claude plugin ... --scope project`
 
 
 Step = WriteFile | DeletePath | EditJson | MovePath | RunCommand
@@ -182,10 +183,13 @@ class ApplyResult:
     output: list[str] = field(default_factory=list)
 
 
-def run_command(argv: list[str], timeout: int) -> str:
+Runner = Callable[[list[str], int, Path | None], str]
+
+
+def run_command(argv: list[str], timeout: int, cwd: Path | None = None) -> str:
     try:
         result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
+            argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, cwd=cwd
         )
     except FileNotFoundError as exc:
         raise PlanError(f"{argv[0]}: command not found") from exc
@@ -236,7 +240,7 @@ def _edit_json(step: EditJson) -> None:
     _write_atomic(target, dumps(new).encode(), like=target)
 
 
-def _run(step: Step, runner: Callable[[list[str], int], str]) -> str:
+def _run(step: Step, runner: Runner) -> str:
     match step:
         case WriteFile(path=p, content=c, executable=x):
             target = _resolved_target(p)
@@ -252,8 +256,8 @@ def _run(step: Step, runner: Callable[[list[str], int], str]) -> str:
                 raise PlanError(f"{d} already exists")
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(s, d)
-        case RunCommand(argv=argv, timeout=t):
-            return runner(argv, t)
+        case RunCommand(argv=argv, timeout=t, cwd=cwd):
+            return runner(argv, t, cwd)
     return ""
 
 
@@ -270,9 +274,7 @@ def _prune(backup_root: Path, keep: int) -> None:
         shutil.rmtree(old, ignore_errors=True)
 
 
-def apply(
-    plan: Plan, backup_root: Path, runner: Callable[[list[str], int], str] = run_command, keep: int = 20
-) -> ApplyResult:
+def apply(plan: Plan, backup_root: Path, runner: Runner = run_command, keep: int = 20) -> ApplyResult:
     changed = [p for p, fp in plan.preimages.items() if fingerprint(p) != fp]
     if changed:
         raise PlanConflict(f"{changed[0].name} changed since the plan was made ({changed[0]}) — re-plan?")

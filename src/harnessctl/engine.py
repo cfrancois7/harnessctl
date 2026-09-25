@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +33,16 @@ from harnessctl.model import (
     Status,
     Trust,
 )
-from harnessctl.planner import ApplyResult, DeletePath, EditJson, Plan, PlanError, apply, run_command
+from harnessctl.planner import (
+    ApplyResult,
+    DeletePath,
+    EditJson,
+    Plan,
+    PlanError,
+    Runner,
+    apply,
+    run_command,
+)
 from harnessctl.provenance import LockEntry, add_entry_edit, read_lock, remove_entry_edit, resolve
 from harnessctl.sources.cache import SourceState, sync_source
 from harnessctl.sources.formats import payload_hash
@@ -62,7 +70,7 @@ class Engine:
         paths: Paths,
         project: Path | None,
         adapters: list[Adapter] | None = None,
-        runner: Callable[[list[str], int], str] = run_command,
+        runner: Runner = run_command,
         env: dict[str, str] | None = None,
     ):
         self.paths = paths

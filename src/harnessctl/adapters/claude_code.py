@@ -239,6 +239,15 @@ class ClaudeCodeAdapter:
 
     # --- changes -----------------------------------------------------------------------------
 
+    @staticmethod
+    def _cli_cwd(scope: Scope, project: Path | None) -> Path | None:
+        """`claude plugin ... --scope project|local` acts on the project of its working directory."""
+        if scope is Scope.USER:
+            return None
+        if project is None:
+            raise PlanError("no project here: only user scope is available")
+        return project
+
     def plan_install(
         self, item: CatalogItem, scope: Scope, project: Path | None, replace: bool = False
     ) -> Install:
@@ -252,7 +261,7 @@ class ClaudeCodeAdapter:
             case FilesVariant():
                 return self._install_files(variant, scope, project, replace)
             case ClaudePluginVariant():
-                return self._install_plugin(variant, scope)
+                return self._install_plugin(variant, scope, project)
         raise PlanError(f"{type(variant).__name__} variants are not supported for Claude Code")
 
     def _install_files(
@@ -276,17 +285,22 @@ class ClaudeCodeAdapter:
                     ]
         return Install(steps, locations, hashes, settings)
 
-    def _install_plugin(self, variant: ClaudePluginVariant, scope: Scope) -> Install:
+    def _install_plugin(self, variant: ClaudePluginVariant, scope: Scope, project: Path | None) -> Install:
         if self._which("claude") is None:
             raise PlanError("the claude CLI is not on PATH, so plugins cannot be installed")
         try:
             markets = read_json(self.claude_dir / "plugins" / "known_marketplaces.json", default={})
         except JsonFileError:
             markets = {}
+        cwd = self._cli_cwd(scope, project)
         steps: list[Step] = []
         if variant.marketplace_name not in markets:
-            steps.append(RunCommand(["claude", "plugin", "marketplace", "add", variant.marketplace_url]))
-        steps.append(RunCommand(["claude", "plugin", "install", variant.plugin_id, "--scope", scope.value]))
+            steps.append(
+                RunCommand(["claude", "plugin", "marketplace", "add", variant.marketplace_url], cwd=cwd)
+            )
+        steps.append(
+            RunCommand(["claude", "plugin", "install", variant.plugin_id, "--scope", scope.value], cwd=cwd)
+        )
         return Install(steps, [f"claude-plugin:{variant.plugin_id}"], {})
 
     def plan_remove(self, inst: InstalledItem, project: Path | None) -> list[Step]:
@@ -309,7 +323,15 @@ class ClaudeCodeAdapter:
             case Kind.PLUGIN:
                 return [
                     RunCommand(
-                        ["claude", "plugin", "uninstall", inst.meta["plugin_id"], "--scope", inst.scope.value]
+                        [
+                            "claude",
+                            "plugin",
+                            "uninstall",
+                            inst.meta["plugin_id"],
+                            "--scope",
+                            inst.scope.value,
+                        ],
+                        cwd=self._cli_cwd(inst.scope, project),
                     )
                 ]
 
@@ -318,7 +340,10 @@ class ClaudeCodeAdapter:
         if inst.kind is Kind.PLUGIN:
             verb = "disable" if inst.enabled else "enable"
             return [
-                RunCommand(["claude", "plugin", verb, inst.meta["plugin_id"], "--scope", inst.scope.value])
+                RunCommand(
+                    ["claude", "plugin", verb, inst.meta["plugin_id"], "--scope", inst.scope.value],
+                    cwd=self._cli_cwd(inst.scope, project),
+                )
             ]
         if not inst.enabled:
             return unpark_steps(inst)

@@ -18,7 +18,9 @@ def oc(env):
 
 
 def _apply(env, steps):
-    result = apply(Plan.build("t", "opencode", Scope.USER, steps), env.paths.backups, runner=lambda a, t: "")
+    result = apply(
+        Plan.build("t", "opencode", Scope.USER, steps), env.paths.backups, runner=lambda a, t, c: ""
+    )
     assert result.ok, result.error
 
 

@@ -35,7 +35,7 @@ def _add_key(key, value):
     return edit
 
 
-def _ok_runner(argv, timeout):
+def _ok_runner(argv, timeout, cwd):
     return "ran " + " ".join(argv)
 
 
@@ -66,7 +66,7 @@ def test_conflict_when_file_changed_after_planning(tmp_path):
 def test_failure_rolls_back_every_step(tmp_path):
     existing = write(tmp_path / "keep.txt", "original")
 
-    def failing(argv, timeout):
+    def failing(argv, timeout, cwd):
         raise PlanError("claude: plugin not found")
 
     plan = _plan(
@@ -110,7 +110,7 @@ def test_move_and_rollback_of_directories(tmp_path):
     write(src / "SKILL.md", "a")
     dst = tmp_path / "parking" / "a" / "payload"
 
-    def failing(argv, timeout):
+    def failing(argv, timeout, cwd):
         raise PlanError("boom")
 
     result = apply(_plan(MovePath(src, dst), RunCommand(["x"])), tmp_path / "backups", runner=failing)
@@ -188,7 +188,7 @@ def test_rollback_restores_symlink_target_and_link(tmp_path):
     link = tmp_path / "settings.json"
     link.symlink_to(target)
 
-    def failing(argv, timeout):
+    def failing(argv, timeout, cwd):
         raise PlanError("boom")
 
     plan = _plan(EditJson(link, _add_key("b", 2), "b"), RunCommand(["x"]))
@@ -206,7 +206,7 @@ def test_rollback_records_failed_restores_but_keeps_going(tmp_path, monkeypatch)
     a = write(tmp_path / "a.txt", "orig-a")
     b = write(tmp_path / "b.txt", "orig-b")
 
-    def failing(argv, timeout):
+    def failing(argv, timeout, cwd):
         raise PlanError("boom")
 
     real_restore = planner._restore
@@ -289,7 +289,7 @@ def test_conflict_when_symlink_is_repointed_during_apply(tmp_path):
     link = tmp_path / "settings.json"
     link.symlink_to(a)
 
-    def repoint_then_ok(argv, timeout):
+    def repoint_then_ok(argv, timeout, cwd):
         link.unlink()
         link.symlink_to(b)
         return "ran"

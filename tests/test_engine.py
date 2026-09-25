@@ -157,7 +157,7 @@ def test_unavailable_source_is_kept(env, tmp_path):
 def test_install_refuses_truncated_lock_before_running_anything(env, acme, tmp_path):
     calls: list[list[str]] = []
 
-    def runner(argv, timeout):
+    def runner(argv, timeout, cwd):
         calls.append(argv)
         return ""
 
@@ -200,3 +200,42 @@ def test_remove_only_deletes_files_inside_the_scope_dir(engine, env):
     assert engine.apply(plan).ok
     assert victim.exists()
     assert not (env.home / ".claude" / "hooks" / "block-secrets-read" / "secrets.sh").exists()
+
+
+def _cwd_recording_claude(env, log):
+    script = env.bin / "claude"
+    script.write_text(f'#!/bin/sh\necho "$(pwd) $@" >> "{log}"\n')
+    script.chmod(0o755)
+
+
+def test_project_scope_plugin_commands_run_in_the_project(engine, env, tmp_path, monkeypatch):
+    from harnessctl.model import InstalledItem
+
+    log = tmp_path / "claude-cwd.log"
+    _cwd_recording_claude(env, log)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    item = _item(engine, "jira-context")
+    assert engine.apply(engine.plan_install(item, "claude-code", Scope.PROJECT)).ok
+    plugin = InstalledItem(
+        "claude-code",
+        Scope.PROJECT,
+        Kind.PLUGIN,
+        "jira-context",
+        "claude-plugin:jira-context@acme-plugins",
+        meta={"plugin_id": "jira-context@acme-plugins"},
+    )
+    assert engine.apply(engine.plan_toggle(plugin)).ok
+    assert engine.apply(engine.plan_remove(plugin)).ok
+    assert engine.apply(engine.plan_install(item, "claude-code", Scope.USER)).ok
+    lines = log.read_text().splitlines()
+    assert [line.split(" ", 1)[0] for line in lines] == [
+        str(env.project),  # marketplace add
+        str(env.project),  # install --scope project
+        str(env.project),  # disable --scope project
+        str(env.project),  # uninstall --scope project
+        str(elsewhere),  # marketplace add (user scope runs wherever harnessctl runs)
+        str(elsewhere),  # install --scope user
+    ]
+    assert "install jira-context@acme-plugins --scope project" in lines[1]
