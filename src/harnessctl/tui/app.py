@@ -2,24 +2,36 @@
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Resize
 from textual.widgets import Footer, Static, TabbedContent, TabPane
 from textual.worker import get_current_worker
 
+from harnessctl.config import ConfigError
 from harnessctl.engine import CatalogEntry, Engine
-from harnessctl.model import InstalledItem
+from harnessctl.model import InstalledItem, Scope
+from harnessctl.planner import Plan, PlanConflict, PlanError
 from harnessctl.sources.cache import SourceState
+from harnessctl.tui.modals import PlanModal, ScopePicker
 from harnessctl.tui.text import short_path, sync_summary
 from harnessctl.tui.views import CatalogView, InstalledView, ItemList, ListDetailView, SourcesView
 
 MIN_WIDTH, MIN_HEIGHT, NARROW_BELOW = 50, 15, 100
+
+
+def run_editor(argv: list[str]) -> None:
+    subprocess.run(argv, check=False)
 
 
 @dataclass
@@ -206,4 +218,85 @@ class HarnessApp(App[None]):
             return
         self.harness = ids[(ids.index(self.harness) + 1) % len(ids)] if self.harness in ids else ids[0]
         self._update_header()
+        self.rescan()
+
+    # --- changes -----------------------------------------------------------------------------
+
+    def _report(self, message: str, title: str, error: bool = False) -> None:
+        self.last_outcome = message
+        self.notify(
+            message, title=title, severity="error" if error else "information", timeout=12 if error else 6
+        )
+
+    def propose(self, build: Callable[[], Plan]) -> None:
+        # `build` only assembles the plan's steps in memory (no git or harness CLI runs), so it
+        # is safe to call straight from the UI thread; only apply_plan() below is a worker.
+        before = list(self.engine.lock_errors)
+        try:
+            plan = build()
+        except (PlanError, ConfigError) as exc:
+            self._report(str(exc), "Cannot do that", error=True)
+            return
+        # Building the plan (e.g. plan_remove) can append plan-time "left in place" warnings to
+        # engine.lock_errors; the next rescan wipes them, so surface them now, alongside the plan.
+        for warning in self.engine.lock_errors:
+            if warning not in before:
+                self.notify(warning, title="Lock file", severity="warning", timeout=10)
+        label = self.engine.adapter(plan.harness).label
+        self.push_screen(PlanModal(plan, self.engine.paths.home, label), self._confirmed)
+
+    def _confirmed(self, plan: Plan | None) -> None:
+        if plan is not None:
+            self.apply_plan(plan)
+
+    @work(thread=True, group="apply")
+    def apply_plan(self, plan: Plan) -> None:
+        try:
+            result = self.engine.apply(plan)
+        except PlanConflict as exc:
+            self.call_from_thread(self._report, f"{exc}\nNothing was changed.", plan.title, True)
+        else:
+            if result.ok:
+                self.call_from_thread(self._report, plan.reload_hint or "Done.", plan.title)
+            else:
+                message = (
+                    f"Step {result.failed_step + 1} failed: {result.error}\nEvery change was rolled back."
+                )
+                self.call_from_thread(self._report, message, plan.title, True)
+        self.call_from_thread(self.rescan)
+
+    def install(self, entry: CatalogEntry) -> None:
+        adapter = self.engine.adapter(self.harness)
+        if not entry.available:
+            self._report(f"{entry.item.id} has no {adapter.label} variant.", "Cannot do that", error=True)
+            return
+        scopes = self.engine.scopes()
+        if len(scopes) == 1:
+            self.propose(lambda: self.engine.plan_install(entry.item, self.harness, Scope.USER))
+            return
+        home = self.engine.paths.home
+        choices = [(s, short_path(adapter.scope_dir(s, self.engine.project), home)) for s in scopes]
+
+        def chosen(scope: Scope | None) -> None:
+            if scope is not None:
+                self.propose(lambda: self.engine.plan_install(entry.item, self.harness, scope))
+
+        self.push_screen(ScopePicker(entry.item.id, choices), chosen)
+
+    def edit_item(self, item: InstalledItem) -> None:
+        target = Path(
+            item.meta.get("settings")
+            or item.meta.get("config")
+            or item.meta.get("install_path")
+            or item.location
+        )
+        if target.is_dir() and (target / "SKILL.md").is_file():
+            target = target / "SKILL.md"
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+        try:
+            with self.suspend():
+                run_editor([*shlex.split(editor), str(target)])
+        except SuspendNotSupported:
+            self._report("Opening an editor is not supported in this terminal.", "Cannot do that", error=True)
+            return
         self.rescan()

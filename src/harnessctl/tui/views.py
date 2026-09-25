@@ -177,6 +177,12 @@ GROUPS = [("Skills", Kind.SKILL), ("Hooks", Kind.HOOK), ("Plugins", Kind.PLUGIN)
 
 
 class InstalledView(ListDetailView):
+    BINDINGS = [
+        Binding("space", "toggle", "enable/disable"),
+        Binding("u", "update", "update"),
+        Binding("d", "remove", "remove"),
+        Binding("o", "edit", "open in $EDITOR"),
+    ]
     empty_text = "Nothing installed yet. Open the **Catalog** tab (press `2`) to install something."
 
     def groups(self, items: list[InstalledItem], text: str) -> Groups:
@@ -195,8 +201,28 @@ class InstalledView(ListDetailView):
     def detail(self, item: InstalledItem) -> str:
         return installed_detail(item, self.app.engine.paths.home)
 
+    def _propose(self, method: str) -> None:
+        item = self.selected
+        if item is not None:
+            engine = self.app.engine
+            self.app.propose(lambda: getattr(engine, method)(item))
+
+    def action_toggle(self) -> None:
+        self._propose("plan_toggle")
+
+    def action_update(self) -> None:
+        self._propose("plan_update")
+
+    def action_remove(self) -> None:
+        self._propose("plan_remove")
+
+    def action_edit(self) -> None:
+        if self.selected is not None:
+            self.app.edit_item(self.selected)
+
 
 class CatalogView(ListDetailView):
+    BINDINGS = [Binding("i", "install", "install")]
     empty_text = "No catalog items. Add a source in the **Sources** tab (press `3`)."
 
     def groups(self, entries: list[CatalogEntry], text: str) -> Groups:
@@ -220,6 +246,10 @@ class CatalogView(ListDetailView):
 
     def detail(self, entry: CatalogEntry) -> str:
         return catalog_detail(entry)
+
+    def action_install(self) -> None:
+        if self.selected is not None:
+            self.app.install(self.selected)
 
 
 class SourcesView(ListDetailView):
