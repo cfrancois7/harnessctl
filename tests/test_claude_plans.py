@@ -52,7 +52,7 @@ def test_install_hook_keeps_user_settings(claude, env):
     assert data["model"] == "opus"
     commands = [h["command"] for g in data["hooks"]["PreToolUse"] for h in g["hooks"]]
     assert commands == ["mine.sh", str(script)]
-    assert inst.locations == [f"{settings}::PreToolUse::{script}"]
+    assert inst.locations == [f"{settings}::PreToolUse::Read|Grep::{script}"]
     assert inst.settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == str(script)
 
 
@@ -178,3 +178,85 @@ def test_edit_refused_on_broken_settings(claude, env):
     write(env.home / ".claude" / "settings.json", "{broken")
     with pytest.raises(PlanError, match="Fix the file first"):
         claude.plan_install(ITEMS["block-secrets-read"], Scope.USER, env.project)
+
+
+SHARED_COMMAND = {
+    "model": "opus",
+    "hooks": {
+        "PreToolUse": [
+            {"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt.sh"}]},
+            {"matcher": "Write", "hooks": [{"type": "command", "command": "fmt.sh"}, {"command": "lint.sh"}]},
+            {"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt.sh", "timeout": 9}]},
+        ],
+        "Stop": [{"hooks": [{"type": "command", "command": "fmt.sh"}]}],
+    },
+}
+
+
+def _shared_hooks(claude, env):
+    settings = write(env.home / ".claude" / "settings.json", json.dumps(SHARED_COMMAND))
+    hooks = [i for i in claude.scan(Scope.USER, None) if i.kind is Kind.HOOK and i.enabled]
+    return settings, hooks
+
+
+def test_hooks_sharing_a_command_have_distinct_locations(claude, env):
+    _, hooks = _shared_hooks(claude, env)
+    assert len(hooks) == 5
+    assert len({h.location for h in hooks}) == 5
+
+
+@pytest.mark.parametrize("index", range(5))
+def test_disable_enable_one_of_several_hooks_sharing_a_command_round_trips(claude, env, index):
+    settings, hooks = _shared_hooks(claude, env)
+    target = hooks[index]
+    _apply(env, claude.plan_toggle(target, None))
+    remaining = [
+        (h["command"], h.get("timeout"))
+        for gs in json.loads(settings.read_text())["hooks"].values()
+        for g in gs
+        for h in g["hooks"]
+    ]
+    assert len(remaining) == 4
+    parked = [i for i in claude.scan(Scope.USER, None) if i.kind is Kind.HOOK and not i.enabled]
+    assert len(parked) == 1
+    _apply(env, claude.plan_toggle(parked[0], None))
+    assert json.loads(settings.read_text()) == SHARED_COMMAND
+    assert not list((env.paths.parking / "claude-code").iterdir())
+
+
+def test_disabling_two_hooks_sharing_a_command_parks_them_separately(claude, env):
+    settings, hooks = _shared_hooks(claude, env)
+    edit, write_ = hooks[0], hooks[1]
+    _apply(env, claude.plan_toggle(edit, None))
+    write_ = next(
+        i
+        for i in claude.scan(Scope.USER, None)
+        if i.enabled and i.meta.get("matcher") == "Write" and i.meta.get("command") == "fmt.sh"
+    )
+    _apply(env, claude.plan_toggle(write_, None))
+    assert len(list((env.paths.parking / "claude-code").iterdir())) == 2
+    for parked in [i for i in claude.scan(Scope.USER, None) if not i.enabled]:
+        _apply(env, claude.plan_toggle(parked, None))
+    data = json.loads(settings.read_text())
+    commands = sorted(
+        (g.get("matcher"), h["command"]) for g in data["hooks"]["PreToolUse"] for h in g["hooks"]
+    )
+    assert commands == sorted(
+        (g.get("matcher"), h["command"]) for g in SHARED_COMMAND["hooks"]["PreToolUse"] for h in g["hooks"]
+    )
+
+
+@pytest.mark.parametrize("index", range(5))
+def test_remove_one_of_several_hooks_sharing_a_command_removes_exactly_one(claude, env, index):
+    settings, hooks = _shared_hooks(claude, env)
+    steps = claude.plan_remove(hooks[index], None)
+    assert steps[0].description.startswith("hooks −1")
+    _apply(env, steps)
+    after = [i for i in claude.scan(Scope.USER, None) if i.kind is Kind.HOOK]
+    assert len(after) == 4
+    kept = [(i.meta["event"], i.meta["matcher"], i.meta["hook"]) for i in after]
+    gone = (hooks[index].meta["event"], hooks[index].meta["matcher"], hooks[index].meta["hook"])
+    expected = [(h.meta["event"], h.meta["matcher"], h.meta["hook"]) for h in hooks]
+    expected.remove(gone)
+    assert kept == expected
+    assert json.loads(settings.read_text())["model"] == "opus"

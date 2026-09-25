@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from harnessctl.edits import add_plugin_spec_edit, merge_hooks_edit
+from harnessctl.edits import add_plugin_spec_edit, merge_hooks_edit, restore_hook_edit
 from harnessctl.jsonio import dumps
 from harnessctl.model import InstalledItem, Kind, Scope
 from harnessctl.planner import DeletePath, EditJson, MovePath, Step, WriteFile
@@ -65,7 +65,22 @@ def unpark_steps(inst: InstalledItem) -> list[Step]:
     match restore["type"]:
         case "move":
             steps: list[Step] = [MovePath(pdir / "payload", Path(restore["to"]))]
-        case "hook":
+        case "hook" if "group_index" in restore:
+            steps = [
+                EditJson(
+                    Path(restore["settings"]),
+                    restore_hook_edit(
+                        restore["event"],
+                        restore["group"],
+                        restore["hook"],
+                        restore["group_index"],
+                        restore["hook_index"],
+                        restore["alone"],
+                    ),
+                    f"hooks +1 ({restore['event']}, restored)",
+                )
+            ]
+        case "hook":  # parked before hook positions were recorded
             group = {"hooks": [restore["hook"]]}
             if restore.get("matcher"):
                 group = {"matcher": restore["matcher"], **group}

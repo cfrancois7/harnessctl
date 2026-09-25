@@ -94,7 +94,7 @@ def test_user_scope(claude, env):
 
     hook = items["PostToolUse:fmt.sh"]
     assert hook.kind is Kind.HOOK
-    assert hook.location == f"{env.home}/.claude/settings.json::PostToolUse::~/bin/fmt.sh --all"
+    assert hook.location == f"{env.home}/.claude/settings.json::PostToolUse::Edit::~/bin/fmt.sh --all"
     assert hook.meta["matcher"] == "Edit" and hook.meta["hook"]["timeout"] == 5
 
     plugin = items["superpowers"]

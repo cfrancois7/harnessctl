@@ -48,6 +48,11 @@ def _market_url(source: dict) -> str | None:
     return None
 
 
+def _remove_this_hook(inst: InstalledItem) -> Callable[[object], dict]:
+    m = inst.meta
+    return remove_hooks_edit(m["event"], m.get("matcher"), m["command"], m.get("occurrence", 0))
+
+
 class ClaudeCodeAdapter:
     id = "claude-code"
     label = "Claude Code"
@@ -122,15 +127,20 @@ class ClaudeCodeAdapter:
     ) -> list[InstalledItem]:
         items: list[InstalledItem] = []
         hooks = settings.get("hooks") if isinstance(settings, dict) else None
-        for event, groups in (hooks or {}).items():
-            for group in groups if isinstance(groups, list) else []:
+        seen: dict[tuple, int] = {}
+        for event, groups in (hooks if isinstance(hooks, dict) else {}).items():
+            for group_index, group in enumerate(groups if isinstance(groups, list) else []):
                 if not isinstance(group, dict):
                     continue
-                for hook in group.get("hooks", []):
+                entries = group.get("hooks", [])
+                for hook_index, hook in enumerate(entries if isinstance(entries, list) else []):
                     command = hook.get("command") if isinstance(hook, dict) else None
                     if not isinstance(command, str):
                         continue
                     matcher = group.get("matcher")
+                    key = (event, matcher or "", command)
+                    occurrence = seen.get(key, 0)
+                    seen[key] = occurrence + 1
                     detail = (
                         f"**{event}**"
                         + (f" · matcher `{matcher}`" if matcher else "")
@@ -142,7 +152,7 @@ class ClaudeCodeAdapter:
                             scope,
                             Kind.HOOK,
                             f"{event}:{_command_name(command)}",
-                            hook_location(path, event, command),
+                            hook_location(path, event, matcher, command, occurrence),
                             parent=parent,
                             detail=detail,
                             readonly=readonly,
@@ -150,6 +160,11 @@ class ClaudeCodeAdapter:
                                 "event": event,
                                 "matcher": matcher,
                                 "command": command,
+                                "occurrence": occurrence,
+                                "group_index": group_index,
+                                "hook_index": hook_index,
+                                "group": {k: ([] if k == "hooks" else v) for k, v in group.items()},
+                                "group_size": len(entries),
                                 "hook": hook,
                                 "settings": str(path),
                             },
@@ -255,7 +270,10 @@ class ClaudeCodeAdapter:
             steps.append(EditJson(path, merge_hooks_edit(hooks), f"hooks +{count}"))
             for event, groups in hooks.items():
                 for group in groups:
-                    locations += [hook_location(path, event, h["command"]) for h in group.get("hooks", [])]
+                    locations += [
+                        hook_location(path, event, group.get("matcher"), h["command"])
+                        for h in group.get("hooks", [])
+                    ]
         return Install(steps, locations, hashes, settings)
 
     def _install_plugin(self, variant: ClaudePluginVariant, scope: Scope) -> Install:
@@ -284,7 +302,7 @@ class ClaudeCodeAdapter:
                 return [
                     EditJson(
                         path,
-                        remove_hooks_edit(inst.meta["event"], inst.meta["command"]),
+                        _remove_this_hook(inst),
                         f"hooks −1 ({inst.meta['event']})",
                     )
                 ]
@@ -322,10 +340,14 @@ class ClaudeCodeAdapter:
             "event": inst.meta["event"],
             "matcher": inst.meta.get("matcher"),
             "hook": inst.meta["hook"],
+            "group": inst.meta["group"],
+            "group_index": inst.meta["group_index"],
+            "hook_index": inst.meta["hook_index"],
+            "alone": inst.meta["group_size"] == 1,
         }
         take_out = EditJson(
             path,
-            remove_hooks_edit(inst.meta["event"], inst.meta["command"]),
+            _remove_this_hook(inst),
             f"hooks −1 ({inst.meta['event']}, parked)",
         )
         return park_steps(inst, pdir, scope_dir, restore, [take_out])

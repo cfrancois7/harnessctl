@@ -38,10 +38,10 @@ def test_merge_into_missing_file():
 
 def test_remove_hooks_only_removes_ours_and_prunes_empties():
     data = merge_hooks_edit(OURS)(_copy(THEIRS))
-    data = remove_hooks_edit("PreToolUse", "/h/.claude/hooks/x.sh")(data)
-    data = remove_hooks_edit("Stop", "/h/.claude/hooks/x.sh")(data)
+    data = remove_hooks_edit("PreToolUse", "Read", "/h/.claude/hooks/x.sh")(data)
+    data = remove_hooks_edit("Stop", None, "/h/.claude/hooks/x.sh")(data)
     assert data == THEIRS
-    data = remove_hooks_edit("PreToolUse", "mine.sh")(data)
+    data = remove_hooks_edit("PreToolUse", "Bash", "mine.sh")(data)
     assert data == {"theme": "dark"}
 
 
