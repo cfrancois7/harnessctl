@@ -58,6 +58,7 @@ class SkillVariant:
 class FilesVariant:
     files: list[tuple[Path, str]]  # (absolute source file, destination relative to the scope folder)
     settings: dict = field(default_factory=dict)  # only "hooks"; "{scope_dir}" not yet expanded
+    root: Path | None = None  # the item folder; no source file may resolve outside it
 
 
 @dataclass

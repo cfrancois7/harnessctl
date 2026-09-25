@@ -14,6 +14,21 @@ _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _VARIANT_HARNESS = {"claude-plugin": "claude-code", "npm-plugin": "opencode"}
 
 
+def links_leaving(path: Path, root: Path) -> list[Path]:
+    """`path`, or anything inside it if it is a folder, that resolves outside `root` — e.g. a
+    symlink `x -> ~/.ssh/id_rsa`, whose target would otherwise be copied on install."""
+    inside = root.resolve()
+    candidates = [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]
+    return [p for p in candidates if not p.resolve().is_relative_to(inside)]
+
+
+def _link_errors(where: str, path: Path, root: Path, item_dir: Path, what: str) -> list[str]:
+    return [
+        f"{where}: {p.relative_to(item_dir).as_posix()} is a symlink leading outside the {what} folder"
+        for p in links_leaving(path, root)
+    ]
+
+
 def _safe_destination(dest: object) -> bool:
     if not isinstance(dest, str) or not dest or "\\" in dest:
         return False
@@ -74,6 +89,12 @@ def _check_skill(item_dir: Path, data: dict) -> list[str]:
     rel = str(table.get("path", ""))
     if not _safe_destination(rel) or not (item_dir / rel / "SKILL.md").is_file():
         errors.append(f"[skill].path {rel!r} has no SKILL.md")
+    else:
+        folder = item_dir / rel
+        # What gets installed is the skill folder, so its payload must stay inside it.
+        errors += _link_errors("[skill]", folder, item_dir, item_dir, "item") or _link_errors(
+            "[skill]", folder, folder, item_dir, "skill"
+        )
     unknown = [h for h in table.get("harnesses", list(HARNESSES)) if h not in HARNESSES]
     if unknown:
         errors.append(f"[skill].harnesses: unknown harness {', '.join(map(str, unknown))}")
@@ -102,6 +123,8 @@ def _check_variant(item_dir: Path, harness: str, v: object) -> list[str]:
                     errors.append(f"{where}: source {src!r} must be a relative path inside the item folder")
                 elif not (item_dir / src).is_file():
                     errors.append(f"{where}: file {src!r} not found in item folder")
+                else:
+                    errors += _link_errors(where, item_dir / src, item_dir, item_dir, "item")
                 if not _safe_destination(dest):
                     errors.append(
                         f"{where}: destination {dest!r} must be a relative path inside the harness folder"

@@ -180,8 +180,8 @@ class OpencodeAdapter:
                 if not replace and self._reads_claude_skills() and shared.exists():
                     raise PlanError(f"{item.id} is already active in opencode through {shared}")
                 return install_skill(src, scope_dir / "skills" / item.id, replace)
-            case FilesVariant(files=files):
-                steps, hashes = write_payload_files(files, scope_dir, replace)
+            case FilesVariant(files=files, root=root):
+                steps, hashes = write_payload_files(files, scope_dir, replace, within=root)
                 return Install(steps, [str(s.path) for s in steps], hashes)
             case NpmPluginVariant(package=spec):
                 path = self.config_path(scope, project)

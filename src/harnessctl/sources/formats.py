@@ -21,7 +21,7 @@ from harnessctl.model import (
     SourceFormat,
     Variant,
 )
-from harnessctl.validate import ID_RE, _safe_destination, check_item
+from harnessctl.validate import ID_RE, _safe_destination, check_item, links_leaving
 
 
 def detect_format(root: Path) -> SourceFormat | None:
@@ -110,7 +110,7 @@ def _item_from_toml(item_dir: Path, data: dict, source: str) -> CatalogItem:
             match v["type"]:
                 case "files":
                     files = [(item_dir / src, dest) for src, dest in v["files"].items()]
-                    variants[harness] = FilesVariant(files, v.get("settings", {}))
+                    variants[harness] = FilesVariant(files, v.get("settings", {}), root=item_dir)
                 case "claude-plugin":
                     variants[harness] = ClaudePluginVariant(
                         v["marketplace"], v["marketplace_name"], v["plugin"]
@@ -185,6 +185,11 @@ def _load_skills_repo(root: Path, source: str) -> tuple[list[CatalogItem], list[
         sid = md.parent.name
         if not ID_RE.match(sid):
             warnings.append(f"skills/{sid}: folder name is not a valid id")
+            continue
+        leaving = links_leaving(md.parent, md.parent)
+        if leaving:
+            names = ", ".join(p.relative_to(md.parent).as_posix() for p in leaving)
+            warnings.append(f"skills/{sid}: symlink leading outside the skill folder: {names}")
             continue
         front, body = read_frontmatter(md)
         items.append(

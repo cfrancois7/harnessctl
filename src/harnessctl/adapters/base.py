@@ -11,6 +11,7 @@ from harnessctl.jsonio import JsonFileError, has_comments, read_json, sha256_byt
 from harnessctl.model import CatalogItem, InstalledItem, Kind, Scope
 from harnessctl.planner import PlanError, Step, WriteFile
 from harnessctl.sources.formats import read_frontmatter
+from harnessctl.validate import links_leaving
 
 
 @dataclass
@@ -67,11 +68,15 @@ def require_writable(inst: InstalledItem) -> None:
 
 
 def write_payload_files(
-    files: list[tuple[Path, str]], scope_dir: Path, replace: bool
+    files: list[tuple[Path, str]], scope_dir: Path, replace: bool, within: Path | None = None
 ) -> tuple[list[Step], dict[str, str]]:
+    """Steps copying each source file to its destination. With `within`, a source that resolves
+    outside that folder (a symlink to e.g. ~/.ssh/id_rsa) refuses the plan."""
     steps: list[Step] = []
     hashes: dict[str, str] = {}
     for src, dest in files:
+        if within is not None and links_leaving(src, within):
+            raise PlanError(f"{src} is a symlink leading outside {within}; refusing to install it")
         target = safe_join(scope_dir, dest)
         if (target.exists() or target.is_symlink()) and not replace:
             raise PlanError(f"{target} already exists")
@@ -85,7 +90,7 @@ def install_skill(src: Path, dest: Path, replace: bool = False) -> Install:
     if (dest.exists() or dest.is_symlink()) and not replace:
         raise PlanError(f"{dest} already exists")
     files = [(f, f.relative_to(src).as_posix()) for f in sorted(src.rglob("*")) if f.is_file()]
-    steps, hashes = write_payload_files(files, dest, replace=True)
+    steps, hashes = write_payload_files(files, dest, replace=True, within=src)
     return Install(steps, [str(dest)], hashes)
 
 

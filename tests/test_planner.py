@@ -302,3 +302,27 @@ def test_conflict_when_symlink_is_repointed_during_apply(tmp_path):
     assert link.is_symlink() and os.readlink(link) == str(a)
     assert json.loads(a.read_text()) == {"a": 1}
     assert json.loads(b.read_text()) == {"b": 1}
+
+
+def test_edit_json_reads_utf8_whatever_the_locale(tmp_path):
+    import subprocess
+    import sys
+
+    target = tmp_path / "settings.json"
+    target.write_text('{"name": "café"}\n', encoding="utf-8")
+    script = (
+        "import sys; from pathlib import Path\n"
+        "from harnessctl.model import Scope\n"
+        "from harnessctl.planner import EditJson, Plan, apply\n"
+        "p = Path(sys.argv[1])\n"
+        "def edit(d):\n    d['k'] = 1\n    return d\n"
+        "plan = Plan.build('t', 'claude-code', Scope.USER, [EditJson(p, edit, 'k')])\n"
+        "r = apply(plan, p.parent / 'backups')\n"
+        "print(r.ok, r.error)\n"
+    )
+    env = {**os.environ, "PYTHONUTF8": "0", "LC_ALL": "POSIX", "LANG": "", "PYTHONCOERCECLOCALE": "0"}
+    out = subprocess.run(
+        [sys.executable, "-c", script, str(target)], capture_output=True, text=True, env=env, check=True
+    ).stdout
+    assert out.strip() == "True None"
+    assert json.loads(target.read_text(encoding="utf-8")) == {"name": "café", "k": 1}

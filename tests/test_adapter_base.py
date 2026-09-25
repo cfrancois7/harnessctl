@@ -98,3 +98,23 @@ def test_ensure_json_writable_refuses_undecodable_files(tmp_path):
     folder.mkdir()
     with pytest.raises(PlanError, match="Fix the file first"):
         ensure_json_writable(folder)
+
+
+def test_install_refuses_payload_symlinks_that_leave_the_item(tmp_path):
+    secret = write(tmp_path / "secret" / "id_rsa", "PRIVATE KEY")
+    src = tmp_path / "src" / "tdd"
+    skill(src)
+    (src / "key").symlink_to(secret)
+    with pytest.raises(PlanError, match="outside"):
+        install_skill(src, tmp_path / "skills" / "tdd")
+    (src / "key").unlink()
+    (src / "nested").mkdir()
+    (src / "nested" / "same").symlink_to(src / "SKILL.md")
+    assert install_skill(src, tmp_path / "skills" / "tdd").steps
+
+    item = tmp_path / "item"
+    link = item / "hook.sh"
+    item.mkdir()
+    link.symlink_to(secret)
+    with pytest.raises(PlanError, match="outside"):
+        write_payload_files([(link, "hooks/hook.sh")], tmp_path / "scope", False, within=item)

@@ -129,7 +129,8 @@ def add_plugin_spec_edit(spec: str) -> Callable[[Any], dict]:
 def remove_plugin_spec_edit(spec: str) -> Callable[[Any], dict]:
     def edit(data: Any) -> dict:
         data = data if isinstance(data, dict) else {}
-        data["plugin"] = [p for p in data.get("plugin", []) if _spec_of(p) != spec]
+        if "plugin" in data:
+            data["plugin"] = [p for p in data["plugin"] if _spec_of(p) != spec]
         return data
 
     return edit

@@ -1,4 +1,4 @@
-"""Command-line entry point. `harnessctl` opens the TUI (wired in Task 14)."""
+"""Command-line entry point. `harnessctl` opens the TUI; `harnessctl validate` lints a catalog."""
 
 import argparse
 import logging
@@ -55,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = Paths.from_env()
     _setup_logging(paths)
-    project = args.project.resolve() if args.project else find_project(Path.cwd())
+    home = paths.home.resolve()
+    project = args.project.resolve() if args.project else find_project(Path.cwd().resolve(), home)
+    if project == home:
+        project = None  # user and project scope would be the same folders
     HarnessApp(Engine(paths, project)).run()
     return 0
 

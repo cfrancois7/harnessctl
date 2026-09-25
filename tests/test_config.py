@@ -122,3 +122,26 @@ def test_add_source_never_touches_corporate_toml(env):
 )
 def test_default_source_name(url, name):
     assert default_source_name(url) == name
+
+
+def test_home_with_a_git_folder_is_not_a_project(tmp_path):
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    (home / "notes").mkdir()
+    assert find_project(home, home=home) is None
+    assert find_project(home / "notes", home=home) is None
+    (home / "code" / ".git").mkdir(parents=True)
+    assert find_project(home / "code", home=home) == home / "code"
+
+
+def test_cli_treats_home_as_no_project(env, monkeypatch):
+    from harnessctl import cli
+    from harnessctl.tui import app as tui_app
+
+    (env.home / ".git").mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(tui_app.HarnessApp, "run", lambda self: seen.append(self.engine.project))
+    monkeypatch.chdir(env.home)
+    assert cli.main([]) == 0
+    assert cli.main(["--project", str(env.home)]) == 0
+    assert seen == [None, None]

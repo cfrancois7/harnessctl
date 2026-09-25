@@ -284,3 +284,31 @@ files = {{ "s.sh" = "hooks/s.sh" }}
     items, warnings = load_items(root, SourceFormat.CATALOG, "acme")
     assert "bad" not in {i.id for i in items}
     assert any(message in w for w in warnings), warnings
+
+
+def test_payload_symlinks_leaving_the_item_folder_are_rejected(tmp_path):
+    secret = write(tmp_path / "secret" / "id_rsa", "PRIVATE KEY")
+    root = tmp_path / "cat"
+    shutil.copytree(EXAMPLES, root)
+    (root / "items" / "api-conventions" / "skill" / "key").symlink_to(secret)
+    (root / "items" / "api-conventions" / "skill" / "ok-link").symlink_to("SKILL.md")
+    hook = root / "items" / "block-secrets-read" / "claude" / "secrets.sh"
+    hook.unlink()
+    hook.symlink_to(secret)
+    items, warnings = load_items(root, SourceFormat.CATALOG, "acme")
+    assert {i.id for i in items} == {"jira-context"}
+    text = "\n".join(warnings)
+    assert "items/api-conventions/item.toml: " in text and "skill/key" in text
+    assert "items/block-secrets-read/item.toml: " in text and "claude/secrets.sh" in text
+    assert "ok-link" not in text
+    assert validate_catalog(root) == warnings
+
+
+def test_skills_repo_symlinks_leaving_the_skill_are_skipped(tmp_path):
+    secret = write(tmp_path / "secret" / "id_rsa", "PRIVATE KEY")
+    skill(tmp_path / "r" / "skills" / "good")
+    skill(tmp_path / "r" / "skills" / "evil")
+    (tmp_path / "r" / "skills" / "evil" / "refs").symlink_to(secret.parent)
+    items, warnings = load_items(tmp_path / "r", SourceFormat.SKILLS_REPO, "s")
+    assert [i.id for i in items] == ["good"]
+    assert len(warnings) == 1 and "skills/evil" in warnings[0] and "refs" in warnings[0]

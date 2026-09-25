@@ -75,9 +75,12 @@ def project_lock(project: Path) -> Path:
     return project / ".harnessctl" / "lock.json"
 
 
-def find_project(start: Path) -> Path | None:
-    """Nearest ancestor of `start` (inclusive) that contains `.git`."""
+def find_project(start: Path, home: Path | None = None) -> Path | None:
+    """Nearest ancestor of `start` (inclusive) that contains `.git`. The home folder is never a
+    project (a dotfiles repo in ~ would make project and user scope the same folders)."""
     for folder in [start, *start.parents]:
+        if home is not None and folder == home:
+            return None
         if (folder / ".git").exists():
             return folder
     return None

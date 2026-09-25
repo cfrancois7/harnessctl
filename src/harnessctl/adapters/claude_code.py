@@ -276,7 +276,7 @@ class ClaudeCodeAdapter:
         self, variant: FilesVariant, scope: Scope, project: Path | None, replace: bool
     ) -> Install:
         scope_dir = self.scope_dir(scope, project)
-        steps, hashes = write_payload_files(variant.files, scope_dir, replace)
+        steps, hashes = write_payload_files(variant.files, scope_dir, replace, within=variant.root)
         settings = expand_placeholders(variant.settings, scope_dir)
         locations: list[str] = []
         hooks = settings.get("hooks", {})

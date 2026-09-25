@@ -64,3 +64,8 @@ def test_plugin_spec_name():
 def test_expand_placeholders():
     value = {"a": ["{scope_dir}/x.sh", 3], "b": "{scope_dir}"}
     assert expand_placeholders(value, Path("/h/.claude")) == {"a": ["/h/.claude/x.sh", 3], "b": "/h/.claude"}
+
+
+def test_remove_plugin_spec_leaves_a_missing_plugin_key_absent():
+    assert remove_plugin_spec_edit("x")({"$schema": "s"}) == {"$schema": "s"}
+    assert remove_plugin_spec_edit("x")(None) == {}

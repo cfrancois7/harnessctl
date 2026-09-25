@@ -229,7 +229,7 @@ def _write_atomic(path: Path, data: bytes, like: Path | None = None) -> None:
 
 def _edit_json(step: EditJson) -> None:
     target = _resolved_target(step.path)
-    text = target.read_text() if target.exists() else None
+    text = target.read_text(encoding="utf-8") if target.exists() else None
     if text is not None and has_comments(text):
         raise PlanError(f"{target} contains comments, which harnessctl will not rewrite")
     try:
@@ -323,7 +323,7 @@ def plan_diff(plan: Plan) -> str:
             old = step.path.read_text(errors="replace") if step.path.is_file() else ""
             new = step.content.decode(errors="replace")
         elif isinstance(step, EditJson):
-            old = step.path.read_text() if step.path.is_file() else ""
+            old = step.path.read_text(encoding="utf-8", errors="replace") if step.path.is_file() else ""
             try:
                 new = dumps(step.edit(copy.deepcopy(loads_jsonc(old) if old.strip() else None)))
             except Exception as exc:  # noqa: BLE001 - a preview must never crash the UI
