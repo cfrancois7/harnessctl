@@ -231,17 +231,14 @@ class HarnessApp(App[None]):
     def propose(self, build: Callable[[], Plan]) -> None:
         # `build` only assembles the plan's steps in memory (no git or harness CLI runs), so it
         # is safe to call straight from the UI thread; only apply_plan() below is a worker.
-        before = list(self.engine.lock_errors)
         try:
             plan = build()
         except (PlanError, ConfigError) as exc:
             self._report(str(exc), "Cannot do that", error=True)
             return
-        # Building the plan (e.g. plan_remove) can append plan-time "left in place" warnings to
-        # engine.lock_errors; the next rescan wipes them, so surface them now, alongside the plan.
-        for warning in self.engine.lock_errors:
-            if warning not in before:
-                self.notify(warning, title="Lock file", severity="warning", timeout=10)
+        # Plan-time "left in place" warnings (e.g. a tampered lock entry) travel on the plan
+        # itself (see Plan.warnings) and are rendered inside PlanModal — not read off shared
+        # engine.lock_errors, which a concurrent rescan thread can reset or consume first.
         label = self.engine.adapter(plan.harness).label
         self.push_screen(PlanModal(plan, self.engine.paths.home, label), self._confirmed)
 

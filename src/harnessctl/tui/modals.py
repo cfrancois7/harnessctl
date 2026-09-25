@@ -75,6 +75,7 @@ class PlanModal(ModalScreen[Plan | None]):
                            border: round $accent; background: $surface; padding: 1 2; }
     PlanModal .dim { color: $text-muted; }
     PlanModal #plan-steps { margin: 1 0; }
+    PlanModal #plan-warnings { margin: 1 0; }
     """
 
     def __init__(self, plan: Plan, home: Path, harness_label: str):
@@ -87,6 +88,11 @@ class PlanModal(ModalScreen[Plan | None]):
         with Vertical():
             yield Static(Text(self.plan.title, style="bold"))
             yield Static(f"{self.harness_label} · {self.plan.scope} scope", classes="dim")
+            if self.plan.warnings:
+                yield Static(
+                    Text("\n".join(f"⚠ {w}" for w in self.plan.warnings), style="bold #ff8a65"),
+                    id="plan-warnings",
+                )
             yield Static(
                 plan_text(self.plan, self.home) if self.plan.steps else "Nothing to do.", id="plan-steps"
             )

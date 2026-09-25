@@ -284,6 +284,7 @@ class Engine:
                 if i.location in entry.locations and i.scope is inst.scope
             ] or [inst]
         steps = [s for t in targets for s in adapter.plan_remove(t, self.project)]
+        warnings: list[str] = []
         if entry is not None:
             covered = [s.path for s in steps if isinstance(s, DeletePath)]
             scope_dir = self._scope_dir_for(inst.harness, inst.scope)
@@ -294,7 +295,7 @@ class Engine:
                 if scope_dir is not None and path.resolve().is_relative_to(scope_dir):
                     steps.append(DeletePath(path))
                 else:
-                    self.lock_errors.append(
+                    warnings.append(
                         f"{entry.item_id}: {path} is outside the {inst.scope} scope and was left in place "
                         "(the lock entry may have been tampered with)"
                     )
@@ -302,7 +303,12 @@ class Engine:
                 EditJson(self.lock_path(inst.scope), remove_entry_edit(entry), f"forget {entry.item_id}")
             )
         return Plan.build(
-            f"Remove {inst.name} ({inst.scope})", inst.harness, inst.scope, steps, adapter.reload_hint
+            f"Remove {inst.name} ({inst.scope})",
+            inst.harness,
+            inst.scope,
+            steps,
+            adapter.reload_hint,
+            warnings=warnings,
         )
 
     def plan_toggle(self, inst: InstalledItem) -> Plan:
@@ -330,6 +336,7 @@ class Engine:
             inst.scope,
             [*remove.steps, *install.steps],
             install.reload_hint,
+            warnings=[*remove.warnings, *install.warnings],
         )
 
     def apply(self, plan: Plan) -> ApplyResult:

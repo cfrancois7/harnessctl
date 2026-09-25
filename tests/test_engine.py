@@ -191,7 +191,11 @@ def test_remove_only_deletes_files_inside_the_scope_dir(engine, env):
     inst = _installed(engine, "block-secrets-read")
     plan = engine.plan_remove(inst)
     assert not any(isinstance(s, DeletePath) and Path(s.path) == victim for s in plan.steps)
-    assert any("victim.txt" in msg for msg in engine.lock_errors)
+    # Plan-time "left in place" warnings travel on the plan itself, not on engine.lock_errors
+    # (Task 16 fix round 1 controller ruling) — they must survive a cancel-then-retry, which
+    # shared, unsynchronized engine state cannot guarantee.
+    assert any("victim.txt" in msg for msg in plan.warnings)
+    assert engine.lock_errors == []
 
     assert engine.apply(plan).ok
     assert victim.exists()

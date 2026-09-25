@@ -143,6 +143,11 @@ class Plan:
     scope: Scope
     steps: list[Step]
     reload_hint: str = ""
+    # Plan-time "left in place" warnings (e.g. a tampered lock entry pointing outside the scope
+    # dir), discovered while building the plan. They travel on the Plan itself rather than on any
+    # shared engine state, so they survive a cancel-then-retry and are immune to a concurrent
+    # rescan thread resetting/reading that shared state.
+    warnings: list[str] = field(default_factory=list)
     preimages: dict[Path, str | None] = field(default_factory=dict)
     # Step index -> the file a WriteFile/EditJson step resolved to at build time (itself, unless
     # its path was a symlink to a file). Lets apply() notice a repoint or a link-to-regular-file
@@ -150,8 +155,16 @@ class Plan:
     write_targets: dict[int, Path] = field(default_factory=dict)
 
     @classmethod
-    def build(cls, title: str, harness: str, scope: Scope, steps: list[Step], reload_hint: str = "") -> Plan:
-        plan = cls(title, harness, scope, list(steps), reload_hint)
+    def build(
+        cls,
+        title: str,
+        harness: str,
+        scope: Scope,
+        steps: list[Step],
+        reload_hint: str = "",
+        warnings: list[str] | None = None,
+    ) -> Plan:
+        plan = cls(title, harness, scope, list(steps), reload_hint, list(warnings or []))
         plan.preimages = {p: fingerprint(p) for s in plan.steps for p in _touched(s)}
         plan.write_targets = {
             i: _resolved_target(s.path)
