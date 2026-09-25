@@ -83,29 +83,58 @@ def remove_hooks_edit(
     return edit
 
 
-def restore_hook_edit(
-    event: str, group: dict, hook: dict, group_index: int, hook_index: int, alone: bool
-) -> Callable[[Any], dict]:
-    """Put a parked hook back where it was taken from. `group` is its matcher group as it was
-    (its `hooks` value is ignored; key order is kept); `alone` says the group held only this
-    hook (and was therefore dropped)."""
+def _same_group(group: Any, snapshot: dict) -> bool:
+    """`group` in the file is the group `snapshot` recorded: same matcher, a hook in common."""
+    return (
+        isinstance(group, dict)
+        and _matcher(group) == _matcher(snapshot)
+        and any(h in snapshot.get("hooks", []) for h in group.get("hooks", []))
+    )
+
+
+def restore_hook_edit(event: str, hook: dict, where: dict) -> Callable[[Any], dict]:
+    """Put a parked hook back where it was taken from, whatever order hooks are restored in.
+
+    `where` (recorded at park time) holds `group` (its matcher group without other hooks; key
+    order kept), `group_index`, `before`/`after` (the group's other hooks, including ones parked
+    from it), and `groups_before`/`groups_after` (the event's other groups). The hook rejoins
+    the group holding one of its neighbours, between them; else its group is recreated after
+    its preceding groups / ahead of its following ones."""
+    before, after = where.get("before", []), where.get("after", [])
 
     def edit(data: Any) -> dict:
         data = data if isinstance(data, dict) else {}
         groups = data.setdefault("hooks", {}).setdefault(event, [])
-        if not alone and group_index < len(groups):
-            there = groups[group_index]
-            if isinstance(there, dict) and _matcher(there) == _matcher(group):
-                there.setdefault("hooks", []).insert(hook_index, copy.deepcopy(hook))
+        for group in groups:
+            if not isinstance(group, dict) or _matcher(group) != _matcher(where["group"]):
+                continue
+            hooks = group.get("hooks", [])
+            if any(h in before or h in after for h in hooks):
+                spot = next((n for n, h in enumerate(hooks) if h in after), None)
+                if spot is None:
+                    spot = max(n + 1 for n, h in enumerate(hooks) if h in before)
+                hooks.insert(spot, copy.deepcopy(hook))
                 return data
-        if not alone:
-            for there in groups:
-                if isinstance(there, dict) and _matcher(there) == _matcher(group):
-                    there.setdefault("hooks", []).append(copy.deepcopy(hook))
-                    return data
-        rebuilt = {k: copy.deepcopy(v) for k, v in group.items()}
+        spot = next(
+            (
+                n
+                for n, g in enumerate(groups)
+                if any(_same_group(g, s) for s in where.get("groups_after", []))
+            ),
+            None,
+        )
+        if spot is None:
+            spot = max(
+                (
+                    n + 1
+                    for n, g in enumerate(groups)
+                    if any(_same_group(g, s) for s in where.get("groups_before", []))
+                ),
+                default=min(where.get("group_index", len(groups)), len(groups)),
+            )
+        rebuilt = {k: copy.deepcopy(v) for k, v in where["group"].items()}
         rebuilt["hooks"] = [copy.deepcopy(hook)]
-        groups.insert(min(group_index, len(groups)), rebuilt)
+        groups.insert(spot, rebuilt)
         return data
 
     return edit

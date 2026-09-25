@@ -13,9 +13,16 @@ from harnessctl.planner import DeletePath, EditJson, MovePath, Step, WriteFile
 
 
 def park_dir(parking: Path, harness: str, location: str, name: str) -> Path:
+    """A parking folder for the item at `location` that is not in use yet: a park never
+    overwrites another parked item (two hooks can share a location once one is parked)."""
     digest = hashlib.sha1(location.encode()).hexdigest()[:10]
     safe = name.replace("/", "_").lstrip("@.")
-    return parking / harness / f"{safe}-{digest}"
+    base = parking / harness / f"{safe}-{digest}"
+    candidate, n = base, 1
+    while candidate.exists() or candidate.is_symlink():
+        n += 1
+        candidate = base.with_name(f"{base.name}-{n}")
+    return candidate
 
 
 def park_steps(
@@ -50,10 +57,17 @@ def scan_parked(parking: Path, harness: str, scope: Scope, scope_dir: Path) -> l
                 scope=scope,
                 kind=Kind(meta["kind"]),
                 name=meta["name"],
-                location=meta["location"],
+                # Distinct from the enabled item that may now hold the same location; the
+                # original is kept for lock matching (see InstalledItem.origin_location).
+                location=f"{meta['location']}::parked::{meta_file.parent.name}",
                 enabled=False,
                 detail=meta.get("detail", ""),
-                meta={**meta.get("meta", {}), "park_dir": str(meta_file.parent), "restore": meta["restore"]},
+                meta={
+                    **meta.get("meta", {}),
+                    "park_dir": str(meta_file.parent),
+                    "restore": meta["restore"],
+                    "origin_location": meta["location"],
+                },
             )
         )
     return items
@@ -69,14 +83,7 @@ def unpark_steps(inst: InstalledItem) -> list[Step]:
             steps = [
                 EditJson(
                     Path(restore["settings"]),
-                    restore_hook_edit(
-                        restore["event"],
-                        restore["group"],
-                        restore["hook"],
-                        restore["group_index"],
-                        restore["hook_index"],
-                        restore["alone"],
-                    ),
+                    restore_hook_edit(restore["event"], restore["hook"], restore),
                     f"hooks +1 ({restore['event']}, restored)",
                 )
             ]

@@ -82,7 +82,8 @@ def test_park_and_unpark_a_skill(tmp_path):
     assert not folder.exists()
 
     parked = scan_parked(parking, "claude-code", Scope.USER, scope_dir)
-    assert len(parked) == 1 and parked[0].enabled is False and parked[0].location == str(folder)
+    assert len(parked) == 1 and parked[0].enabled is False and parked[0].origin_location == str(folder)
+    assert parked[0].location != str(folder)  # never the same identity as an item now at that path
     assert scan_parked(parking, "claude-code", Scope.PROJECT, tmp_path / "other") == []
 
     assert apply(Plan.build("unpark", "claude-code", Scope.USER, unpark_steps(parked[0])), tmp_path / "b").ok
@@ -118,3 +119,12 @@ def test_install_refuses_payload_symlinks_that_leave_the_item(tmp_path):
     link.symlink_to(secret)
     with pytest.raises(PlanError, match="outside"):
         write_payload_files([(link, "hooks/hook.sh")], tmp_path / "scope", False, within=item)
+
+
+def test_park_dir_never_reuses_a_folder_in_use(tmp_path):
+    first = park_dir(tmp_path, "claude-code", "loc", "x")
+    first.mkdir(parents=True)
+    second = park_dir(tmp_path, "claude-code", "loc", "x")
+    assert second != first and second.parent == first.parent
+    second.mkdir()
+    assert park_dir(tmp_path, "claude-code", "loc", "x") not in {first, second}

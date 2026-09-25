@@ -124,3 +124,8 @@ class InstalledItem:
     readonly: str | None = None  # why the item cannot be changed, if it cannot
     also_in: list[str] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+
+    @property
+    def origin_location(self) -> str:
+        """The location the item was installed at; for a parked item, where it came from."""
+        return self.meta.get("origin_location", self.location)

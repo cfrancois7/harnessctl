@@ -132,7 +132,7 @@ def resolve(
 ) -> tuple[Provenance, LockEntry | None]:
     """Spec §6: lockfile first, then the item's repo URL, else unknown."""
     for entry in entries:
-        if entry.harness == item.harness and item.location in entry.locations:
+        if entry.harness == item.harness and item.origin_location in entry.locations:
             return Provenance(
                 _origin(sources.get(entry.source)), entry.source, entry.item_id, entry.commit
             ), entry

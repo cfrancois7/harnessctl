@@ -250,3 +250,15 @@ def test_malformed_lock_entries_are_skipped_and_reported(engine, env):
     assert items["api-conventions"].meta["lock"].item_id == "api-conventions"
     assert len(engine.lock_errors) == 2 and all("lock.json: entry" in e for e in engine.lock_errors)
     engine.catalog("claude-code")
+
+
+def test_parked_catalog_hook_keeps_its_provenance_and_can_be_removed(engine, env):
+    engine.apply(engine.plan_install(_item(engine, "block-secrets-read"), "claude-code", Scope.USER))
+    hook = _installed(engine, "block-secrets-read")
+    assert engine.apply(engine.plan_toggle(hook)).ok
+    parked = _installed(engine, "block-secrets-read")
+    assert parked.enabled is False and parked.provenance.origin == "corp"
+    assert parked.location != hook.location and parked.origin_location == hook.location
+    assert engine.apply(engine.plan_remove(parked)).ok
+    assert not list((env.paths.parking / "claude-code").iterdir())
+    assert json.loads(env.paths.user_lock.read_text())["entries"] == []

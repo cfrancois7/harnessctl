@@ -262,3 +262,70 @@ def test_remove_one_of_several_hooks_sharing_a_command_removes_exactly_one(claud
     expected.remove(gone)
     assert kept == expected
     assert json.loads(settings.read_text())["model"] == "opus"
+
+
+def _hooks(claude, enabled=True):
+    return [i for i in claude.scan(Scope.USER, None) if i.kind is Kind.HOOK and i.enabled is enabled]
+
+
+def _edit_fmt(claude):
+    return [
+        i for i in _hooks(claude) if i.meta.get("matcher") == "Edit" and i.meta.get("command") == "fmt.sh"
+    ]
+
+
+@pytest.mark.parametrize("restore_order", [[0, 1], [1, 0]])
+def test_parking_two_hooks_with_the_same_event_matcher_and_command_keeps_both(claude, env, restore_order):
+    settings, _ = _shared_hooks(claude, env)
+    _apply(env, claude.plan_toggle(_edit_fmt(claude)[0], None))
+    remaining = _edit_fmt(claude)
+    assert len(remaining) == 1
+    parked = _hooks(claude, enabled=False)
+    assert remaining[0].location not in {p.location for p in parked}
+    _apply(env, claude.plan_toggle(remaining[0], None))
+    parked = _hooks(claude, enabled=False)
+    assert len(parked) == 2 and len({p.location for p in parked}) == 2
+    assert len(list((env.paths.parking / "claude-code").iterdir())) == 2
+    assert sorted(p.meta["restore"]["hook"].get("timeout", 0) for p in parked) == [0, 9]
+    for n in restore_order:
+        _apply(env, claude.plan_toggle(parked[n], None))
+    assert json.loads(settings.read_text()) == SHARED_COMMAND
+    assert not list((env.paths.parking / "claude-code").iterdir())
+
+
+def test_a_non_string_matcher_does_not_hide_the_other_hooks(claude, env):
+    write(
+        env.home / ".claude" / "settings.json",
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": ["Edit"], "hooks": [{"command": "a.sh"}]},
+                        {"matcher": "Write", "hooks": [{"command": "b.sh"}]},
+                    ]
+                }
+            }
+        ),
+    )
+    names = sorted(i.name for i in claude.scan(Scope.USER, None) if i.kind is Kind.HOOK)
+    assert "PreToolUse:b.sh" in names
+
+
+@pytest.mark.parametrize("enable_order", [["a.sh", "b.sh"], ["b.sh", "a.sh"]])
+@pytest.mark.parametrize("disable_order", [["a.sh", "b.sh"], ["b.sh", "a.sh"]])
+def test_disabling_every_hook_of_a_group_restores_one_group(claude, env, disable_order, enable_order):
+    original = {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"command": "x.sh"}]},
+                {"matcher": "Edit", "hooks": [{"command": "a.sh"}, {"command": "b.sh", "timeout": 2}]},
+            ]
+        }
+    }
+    settings = write(env.home / ".claude" / "settings.json", json.dumps(original))
+    for command in disable_order:
+        _apply(env, claude.plan_toggle(next(i for i in _hooks(claude) if i.meta["command"] == command), None))
+    for command in enable_order:
+        parked = next(i for i in _hooks(claude, enabled=False) if i.meta["command"] == command)
+        _apply(env, claude.plan_toggle(parked, None))
+    assert json.loads(settings.read_text()) == original

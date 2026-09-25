@@ -103,7 +103,7 @@ def source_row(state: SourceState) -> Text:
 def installed_detail(item: InstalledItem, home: Path) -> str:
     p = item.provenance
     origin = p.label + (f" · {p.source}" if p.source else "") + (f" @ `{p.commit[:7]}`" if p.commit else "")
-    where = item.meta.get("settings") or item.meta.get("config") or item.location
+    where = item.meta.get("settings") or item.meta.get("config") or item.origin_location
     facts = [
         f"## {item.name}",
         f"{item.kind} · {item.scope} scope · {'enabled' if item.enabled else 'disabled'}",

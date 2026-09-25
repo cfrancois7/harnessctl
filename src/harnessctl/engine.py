@@ -289,7 +289,7 @@ class Engine:
             targets = [
                 i
                 for i in self.installed(inst.harness)
-                if i.location in entry.locations and i.scope is inst.scope
+                if i.origin_location in entry.locations and i.scope is inst.scope
             ] or [inst]
         steps = [s for t in targets for s in adapter.plan_remove(t, self.project)]
         warnings: list[str] = []

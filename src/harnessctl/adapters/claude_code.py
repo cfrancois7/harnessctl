@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 from collections.abc import Callable
@@ -51,6 +52,45 @@ def _market_url(source: dict) -> str | None:
 def _remove_this_hook(inst: InstalledItem) -> Callable[[object], dict]:
     m = inst.meta
     return remove_hooks_edit(m["event"], m.get("matcher"), m["command"], m.get("occurrence", 0))
+
+
+def _neighbours(path: Path, m: dict, parking: Path) -> dict:
+    """Where the hook sits, for a restore in any order: the other hooks of its group, before
+    and after it (plus hooks parked earlier from that group, which recorded this one as their
+    neighbour), and the other groups of its event, before and after its group."""
+    try:
+        groups = read_json(path, default={})["hooks"][m["event"]]
+        n, gi = m["hook_index"], m["group_index"]
+        hooks = groups[gi]["hooks"]
+        before, after = list(hooks[:n]), list(hooks[n + 1 :])
+        snapshot = [
+            {"matcher": g.get("matcher"), "hooks": g.get("hooks", [])} for g in groups if isinstance(g, dict)
+        ]
+        own = sum(isinstance(g, dict) for g in groups[:gi])
+    except JsonFileError, KeyError, IndexError, TypeError, AttributeError:
+        return {"before": [], "after": [], "groups_before": [], "groups_after": []}
+    for meta_file in sorted(parking.glob("*/meta.json")):
+        try:
+            other = json.loads(meta_file.read_text(encoding="utf-8"))["restore"]
+        except OSError, ValueError, KeyError, TypeError:
+            continue
+        same = (other.get("type"), other.get("settings"), other.get("event")) == (
+            "hook",
+            str(path),
+            m["event"],
+        )
+        if not same or (other.get("group") or {}).get("matcher") != m.get("matcher"):
+            continue
+        if m["hook"] in other.get("before", []):
+            after.append(other["hook"])
+        if m["hook"] in other.get("after", []):
+            before.append(other["hook"])
+    return {
+        "before": before,
+        "after": after,
+        "groups_before": snapshot[:own],
+        "groups_after": snapshot[own + 1 :],
+    }
 
 
 class ClaudeCodeAdapter:
@@ -138,7 +178,7 @@ class ClaudeCodeAdapter:
                     if not isinstance(command, str):
                         continue
                     matcher = group.get("matcher")
-                    key = (event, matcher or "", command)
+                    key = (event, str(matcher or ""), command)  # a matcher may be any JSON value
                     occurrence = seen.get(key, 0)
                     seen[key] = occurrence + 1
                     detail = (
@@ -376,7 +416,7 @@ class ClaudeCodeAdapter:
             "group": inst.meta["group"],
             "group_index": inst.meta["group_index"],
             "hook_index": inst.meta["hook_index"],
-            "alone": inst.meta["group_size"] == 1,
+            **_neighbours(path, inst.meta, self.parking / self.id),
         }
         take_out = EditJson(
             path,
