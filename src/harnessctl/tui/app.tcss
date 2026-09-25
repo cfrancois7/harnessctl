@@ -1,0 +1,4 @@
+#main { height: 1fr; }
+#too-small { display: none; width: 1fr; height: 1fr; content-align: center middle; text-style: bold; }
+TabbedContent { height: 1fr; }
+TabPane { padding: 0; }
