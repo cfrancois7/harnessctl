@@ -9,7 +9,7 @@ from packaging.version import InvalidVersion, Version
 
 from harnessctl.model import HARNESSES
 
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")  # \Z: "$" would accept a trailing newline
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 _VARIANT_HARNESS = {"claude-plugin": "claude-code", "npm-plugin": "opencode"}
 

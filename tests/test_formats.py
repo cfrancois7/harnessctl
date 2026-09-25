@@ -312,3 +312,14 @@ def test_skills_repo_symlinks_leaving_the_skill_are_skipped(tmp_path):
     items, warnings = load_items(tmp_path / "r", SourceFormat.SKILLS_REPO, "s")
     assert [i.id for i in items] == ["good"]
     assert len(warnings) == 1 and "skills/evil" in warnings[0] and "refs" in warnings[0]
+
+
+def test_ids_with_a_trailing_newline_are_rejected(tmp_path):
+    root = _marketplace(tmp_path, json.dumps({"name": "m", "plugins": [{"name": "x\n"}, {"name": "y"}]}))
+    items, warnings = load_items(root, SourceFormat.CLAUDE_MARKETPLACE, "m", "u")
+    assert [i.id for i in items] == ["y"] and "name must match" in warnings[0]
+    cat = _catalog_with(tmp_path, 'id = "x\\n"\nkind = "skill"\nversion = "1.0.0"\n[skill]\npath = "s"\n')
+    write(cat / "items" / "bad" / "s" / "SKILL.md", "---\nname: x\n---\n")
+    items, warnings = load_items(cat, SourceFormat.CATALOG, "acme")
+    assert "x\n" not in {i.id for i in items}
+    assert any("id must match" in w for w in warnings)
