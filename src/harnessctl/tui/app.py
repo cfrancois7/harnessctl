@@ -297,3 +297,42 @@ class HarnessApp(App[None]):
             self._report("Opening an editor is not supported in this terminal.", "Cannot do that", error=True)
             return
         self.rescan()
+
+    # --- sources -----------------------------------------------------------------------------
+
+    @staticmethod
+    def _source_outcome(state: SourceState) -> str:
+        if state.error:
+            return f"{state.spec.name}: {state.status} — {state.error}"
+        return f"{state.spec.name}: {state.status}, {len(state.items)} items"
+
+    def add_source(self, answer: dict | None) -> None:
+        if answer:
+            self._add_source(answer)
+
+    @work(thread=True, group="sources")
+    def _add_source(self, answer: dict) -> None:
+        try:
+            state = self.engine.add_source(answer["url"], name=answer["name"], ref=answer["ref"])
+        except ConfigError as exc:
+            self.call_from_thread(self._report, str(exc), "Cannot add source", True)
+            return
+        self.call_from_thread(self._report, self._source_outcome(state), "Source added", state.status != "ok")
+        self.call_from_thread(self.rescan)
+
+    @work(thread=True, group="sources")
+    def refresh_source(self, name: str) -> None:
+        state = self.engine.refresh_source(name)
+        self.call_from_thread(
+            self._report, self._source_outcome(state), "Source refreshed", state.status != "ok"
+        )
+        self.call_from_thread(self.rescan)
+
+    def remove_source(self, name: str) -> None:
+        try:
+            self.engine.remove_source(name)
+        except ConfigError as exc:
+            self._report(str(exc), "Cannot remove source", error=True)
+            return
+        self._report(f"{name} removed.", "Source removed")
+        self.rescan()

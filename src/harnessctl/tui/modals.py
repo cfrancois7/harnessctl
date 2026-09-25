@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Markdown, OptionList, Static
+from textual.widgets import Footer, Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 
 from harnessctl.model import Scope
@@ -146,6 +146,47 @@ class ScopePicker(ModalScreen[Scope | None]):
     @on(OptionList.OptionSelected)
     def _chosen(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(Scope(event.option.id))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AddSourceScreen(ModalScreen[dict | None]):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+    DEFAULT_CSS = """
+    AddSourceScreen { align: center middle; }
+    AddSourceScreen > Vertical { width: 80; max-width: 100%; height: auto; border: round $accent;
+                                 background: $surface; padding: 1 2; }
+    AddSourceScreen .dim { color: $text-muted; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text("Add a public source", style="bold"))
+            yield Static(
+                "A git URL: a harnessctl catalog, a Claude plugin marketplace or a skills repo.",
+                classes="dim",
+            )
+            yield Input(placeholder="https://github.com/owner/repo", id="url")
+            yield Input(placeholder="name (optional)", id="name")
+            yield Input(placeholder="branch or tag (optional)", id="ref")
+            yield Static(
+                Text.assemble(("enter", "bold"), " add   ", ("esc", "bold"), " cancel"), classes="dim"
+            )
+
+    @on(Input.Submitted)
+    def _submit(self) -> None:
+        url = self.query_one("#url", Input).value.strip()
+        if not url:
+            self.query_one("#url", Input).focus()
+            return
+        self.dismiss(
+            {
+                "url": url,
+                "name": self.query_one("#name", Input).value.strip() or None,
+                "ref": self.query_one("#ref", Input).value.strip() or None,
+            }
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)

@@ -253,6 +253,11 @@ class CatalogView(ListDetailView):
 
 
 class SourcesView(ListDetailView):
+    BINDINGS = [
+        Binding("a", "add", "add source"),
+        Binding("r", "refresh", "refresh"),
+        Binding("d", "remove", "remove"),
+    ]
     empty_text = (
         "No sources. Press `a` to add a public git repo, or ask IT for `~/.config/harnessctl/corporate.toml`."
     )
@@ -272,3 +277,16 @@ class SourcesView(ListDetailView):
 
     def detail(self, state: SourceState) -> str:
         return source_detail(state, datetime.now(UTC))
+
+    def action_add(self) -> None:
+        from harnessctl.tui.modals import AddSourceScreen
+
+        self.app.push_screen(AddSourceScreen(), self.app.add_source)
+
+    def action_refresh(self) -> None:
+        if self.selected is not None:
+            self.app.refresh_source(self.selected.spec.name)
+
+    def action_remove(self) -> None:
+        if self.selected is not None:
+            self.app.remove_source(self.selected.spec.name)
