@@ -1,5 +1,6 @@
 """Builders for fake homes, projects, skills and git repos used across the tests."""
 
+import contextlib
 import os
 import shutil
 import stat
@@ -51,6 +52,21 @@ def make_repo(src: Path | None, dest: Path) -> Path:
 def commit_all(repo: Path, message: str) -> None:
     _git("add", "-A", cwd=repo)
     _git("commit", "-q", "--allow-empty", "-m", message, cwd=repo)
+
+
+async def settle(pilot) -> None:
+    """Let workers finish and the screen catch up (workers can start further workers).
+
+    An exclusive worker (e.g. a newer `rescan()` superseding an older, still-in-flight one)
+    is reported by Textual as `WorkerCancelled`/`WorkerFailed` even once cancellation is
+    delivered cleanly; that is normal supersession, not a test failure, so it is ignored here.
+    """
+    from textual.worker import WorkerCancelled, WorkerFailed
+
+    for _ in range(4):
+        with contextlib.suppress(WorkerCancelled, WorkerFailed):
+            await pilot.app.workers.wait_for_complete()
+        await pilot.pause()
 
 
 def stub_command(bin_dir: Path, name: str, log: Path, exit_code: int = 0) -> Path:

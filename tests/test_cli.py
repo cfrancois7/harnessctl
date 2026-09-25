@@ -37,3 +37,14 @@ def test_validate_reports_problems(tmp_path, capsys):
 def test_validate_unknown_layout(tmp_path, capsys):
     assert main(["validate", str(tmp_path)]) == 1
     assert "no catalog.toml" in capsys.readouterr().err
+
+
+def test_default_command_launches_the_tui(env, monkeypatch):
+    from harnessctl.tui.app import HarnessApp
+
+    launched = []
+    monkeypatch.setattr(HarnessApp, "run", lambda self: launched.append(self.engine.project))
+    monkeypatch.chdir(env.project)
+    assert main([]) == 0
+    assert launched == [env.project]
+    assert env.paths.state.is_dir()

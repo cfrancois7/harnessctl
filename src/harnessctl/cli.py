@@ -1,6 +1,7 @@
 """Command-line entry point. `harnessctl` opens the TUI (wired in Task 14)."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -36,10 +37,26 @@ def _validate(path: Path) -> int:
     return 0
 
 
+def _setup_logging(paths) -> None:
+    paths.state.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=paths.log_file, level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "validate":
         return _validate(args.path)
+
+    from harnessctl.config import Paths, find_project
+    from harnessctl.engine import Engine
+    from harnessctl.tui.app import HarnessApp
+
+    paths = Paths.from_env()
+    _setup_logging(paths)
+    project = args.project.resolve() if args.project else find_project(Path.cwd())
+    HarnessApp(Engine(paths, project)).run()
     return 0
 
 
