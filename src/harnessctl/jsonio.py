@@ -47,13 +47,16 @@ def loads_jsonc(text: str) -> Any:
 
 
 def read_json(path: Path, default: Any = None) -> Any:
-    """Read JSON or JSONC. A missing file gives `default`; an invalid one raises JsonFileError."""
+    """Read JSON or JSONC. A missing file gives `default`; an invalid or unreadable one raises
+    JsonFileError."""
     if not path.exists():
         return default
     try:
-        return loads_jsonc(path.read_text())
+        return loads_jsonc(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise JsonFileError(path, str(exc)) from exc
+    except OSError as exc:
+        raise JsonFileError(path, exc.strerror or str(exc)) from exc
 
 
 def dumps(data: Any) -> str:

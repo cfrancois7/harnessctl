@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 from harnessctl.model import CatalogItem, SourceFormat, SourceSpec
 from harnessctl.sources.formats import detect_format, load_items
 
+log = logging.getLogger(__name__)
 MARKER = "harnessctl-synced"  # touched inside .git after every successful fetch
 
 
@@ -74,7 +76,7 @@ def _fetch(spec: SourceSpec, checkout: Path, timeout: int) -> None:
 
 
 def sync_source(spec: SourceSpec, cache_root: Path, fetch: bool = True, timeout: int = 60) -> SourceState:
-    """Fetch (optionally) and load a source. Never raises for git or format problems."""
+    """Fetch (optionally) and load a source. Never raises for git, format or content problems."""
     checkout = cache_root / spec.name
     error: str | None = None
     if fetch:
@@ -99,5 +101,10 @@ def sync_source(spec: SourceSpec, cache_root: Path, fetch: bool = True, timeout:
         state.status = "unavailable"
         state.error = f"{error}; no recognised catalog format" if error else "no recognised catalog format"
         return state
-    state.items, state.warnings = load_items(root, state.format, spec.name, spec.url)
+    try:
+        state.items, state.warnings = load_items(root, state.format, spec.name, spec.url)
+    except Exception as exc:  # noqa: BLE001 - a malformed source must never take the app down
+        log.exception("loading items of source %s", spec.name)
+        state.status = "unavailable"
+        state.error = f"cannot load items: {type(exc).__name__}: {exc}"
     return state

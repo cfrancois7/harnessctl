@@ -46,8 +46,23 @@ def test_read_lock_missing_is_empty(tmp_path):
 def test_read_lock_rejects_foreign_files(tmp_path):
     with pytest.raises(JsonFileError):
         read_lock(write(tmp_path / "lock.json", '{"version": 7, "entries": []}'))
-    with pytest.raises(JsonFileError):
-        read_lock(write(tmp_path / "lock2.json", '{"version": 1, "entries": [{"item_id": "x"}]}'))
+
+
+def test_read_lock_skips_malformed_entries_with_a_message(tmp_path):
+    good = _entry().to_json()
+    entries = [1, "x", {"item_id": "x"}, {**good, "kind": "bogus"}, {**good, "locations": "nope"}, good]
+    lock = write(tmp_path / "lock.json", json.dumps({"version": 1, "entries": entries}))
+    problems: list[str] = []
+    assert read_lock(lock, problems) == [_entry()]
+    assert len(problems) == 5 and all(p.startswith(f"{lock}: entry ") for p in problems)
+    assert read_lock(lock) == [_entry()]  # without a problems list, still no crash
+
+
+def test_lock_edits_keep_malformed_entries_untouched():
+    data = {"version": 1, "entries": [1, {"item_id": "x"}]}
+    data = add_entry_edit(_entry())(data)
+    assert data["entries"][:2] == [1, {"item_id": "x"}]
+    assert remove_entry_edit(_entry())(data)["entries"] == [1, {"item_id": "x"}]
 
 
 def test_edits_roundtrip(tmp_path):

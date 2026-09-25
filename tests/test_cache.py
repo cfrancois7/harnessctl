@@ -59,3 +59,25 @@ def test_subdir_and_unknown_layout(tmp_path):
     assert ok.status == "ok" and len(ok.items) == 3
     bad = sync_source(_spec(mono.as_uri()), tmp_path / "c2")
     assert bad.status == "unavailable" and "no recognised catalog format" in bad.error
+
+
+def test_a_source_whose_items_cannot_load_is_unavailable_not_a_crash(tmp_path, monkeypatch):
+    from harnessctl.sources import cache
+
+    repo = make_repo(EXAMPLES, tmp_path / "remote")
+
+    def boom(*args, **kwargs):
+        raise AttributeError("'list' object has no attribute 'get'")
+
+    monkeypatch.setattr(cache, "load_items", boom)
+    state = sync_source(_spec(repo.as_uri()), tmp_path / "cache")
+    assert state.status == "unavailable" and state.items == []
+    assert "cannot load items" in state.error and "has no attribute" in state.error
+
+
+def test_marketplace_that_is_a_list_leaves_the_source_unavailable_with_a_warning(tmp_path):
+    remote = tmp_path / "remote"
+    write(remote / ".claude-plugin" / "marketplace.json", "[]")
+    make_repo(None, remote)
+    state = sync_source(_spec(remote.as_uri()), tmp_path / "cache")
+    assert state.items == [] and state.warnings

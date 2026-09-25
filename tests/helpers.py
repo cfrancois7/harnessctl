@@ -58,13 +58,14 @@ async def settle(pilot) -> None:
     """Let workers finish and the screen catch up (workers can start further workers).
 
     An exclusive worker (e.g. a newer `rescan()` superseding an older, still-in-flight one)
-    is reported by Textual as `WorkerCancelled`/`WorkerFailed` even once cancellation is
-    delivered cleanly; that is normal supersession, not a test failure, so it is ignored here.
+    is reported by Textual as `WorkerCancelled` once cancellation is delivered; that is normal
+    supersession, not a test failure, so it is ignored here. A `WorkerFailed` (a worker that
+    raised) is a real crash and propagates.
     """
-    from textual.worker import WorkerCancelled, WorkerFailed
+    from textual.worker import WorkerCancelled
 
     for _ in range(4):
-        with contextlib.suppress(WorkerCancelled, WorkerFailed):
+        with contextlib.suppress(WorkerCancelled):
             await pilot.app.workers.wait_for_complete()
         await pilot.pause()
 

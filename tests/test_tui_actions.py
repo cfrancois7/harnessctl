@@ -132,3 +132,66 @@ async def test_open_in_editor(tui, monkeypatch):
         await pilot.press("o")
         skill_md = tui.env.project / ".claude" / "skills" / "api-conventions" / "SKILL.md"
         assert calls == [["myeditor", "--wait", str(skill_md)]]
+
+
+async def test_apply_that_raises_is_reported_and_the_app_survives(tui, monkeypatch):
+    app = tui.app()
+
+    def broken_apply(plan):
+        raise PermissionError(13, "Permission denied", str(tui.env.paths.backups))
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        monkeypatch.setattr(app.engine, "apply", broken_apply)
+        await pilot.press("space", "enter")
+        await settle(pilot)
+        assert app.is_running
+        assert "Permission denied" in app.last_outcome
+        assert "api-conventions" in _items(app)
+
+
+async def test_plan_build_that_raises_unexpectedly_is_reported(tui, monkeypatch):
+    app = tui.app()
+
+    def broken_toggle(inst):
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        monkeypatch.setattr(app.engine, "plan_toggle", broken_toggle)
+        await pilot.press("space")
+        await settle(pilot)
+        assert app.is_running and not isinstance(app.screen, PlanModal)
+        assert "has no attribute" in app.last_outcome
+
+
+async def test_rescan_that_raises_is_reported_and_the_app_survives(tui, monkeypatch):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+
+        def broken_installed(harness):
+            raise KeyError("boom")
+
+        monkeypatch.setattr(app.engine, "installed", broken_installed)
+        await pilot.press("r")
+        await settle(pilot)
+        assert app.is_running
+        assert "boom" in app.last_outcome
+        assert "api-conventions" in _items(app)  # the last good scan stays on screen
+
+
+async def test_malformed_marketplace_source_does_not_crash_startup(tui, tmp_path):
+    from tests.helpers import make_repo, write
+
+    remote = tmp_path / "market"
+    write(remote / ".claude-plugin" / "marketplace.json", '{"name": "m", "plugins": ["x"]}')
+    make_repo(None, remote)
+    write(tui.env.paths.config_toml, f'[[source]]\nname = "market"\nurl = "{remote.as_uri()}"\n')
+    engine = tui.env.engine()
+    engine.load_sources(fetch=True)
+    app = HarnessApp(engine, fetch=False, poll_interval=3600)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        assert app.is_running
+        assert "api-conventions" in _items(app)

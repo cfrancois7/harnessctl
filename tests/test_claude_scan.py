@@ -156,3 +156,31 @@ def test_detect_and_watched_paths(claude, env):
     paths = claude.watched_paths(env.project)
     assert env.home / ".claude" / "settings.json" in paths
     assert env.project / ".claude" / "settings.local.json" in paths
+
+
+@pytest.mark.parametrize(
+    "installed, settings, markets",
+    [
+        ("[]", "{}", "{}"),
+        ('{"plugins": []}', "{}", "{}"),
+        ('{"plugins": {"a@m": ["x", {"scope": "user", "installPath": 3}]}}', "{}", "{}"),
+        ('{"plugins": {"a@m": [{"scope": "user", "installPath": "/nope"}]}}', '{"enabledPlugins": []}', "[]"),
+        ('{"plugins": {"a@m": [{"scope": "user", "installPath": "/nope"}]}}', "{}", '{"m": {"source": "x"}}'),
+    ],
+)
+def test_plugin_files_of_the_wrong_shape_do_not_crash_the_scan(env, installed, settings, markets):
+    home = env.home
+    write(home / ".claude" / "plugins" / "installed_plugins.json", installed)
+    write(home / ".claude" / "plugins" / "known_marketplaces.json", markets)
+    write(home / ".claude" / "settings.json", settings)
+    items = ClaudeCodeAdapter(home, env.paths.parking, which=lambda n: None).scan(Scope.USER, None)
+    plugins = [i for i in items if i.kind is Kind.PLUGIN]
+    assert all(p.status is Status.BROKEN or p.name == "a" for p in plugins)
+
+
+def test_installed_plugins_that_is_not_an_object_is_a_broken_item(env):
+    write(env.home / ".claude" / "plugins" / "installed_plugins.json", "[]")
+    items = ClaudeCodeAdapter(env.home, env.paths.parking, which=lambda n: None).scan(Scope.USER, None)
+    broken = [i for i in items if i.status is Status.BROKEN]
+    assert [b.name for b in broken] == ["installed_plugins.json"]
+    assert "not a JSON object" in broken[0].error

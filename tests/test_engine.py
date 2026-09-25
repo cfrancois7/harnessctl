@@ -239,3 +239,14 @@ def test_project_scope_plugin_commands_run_in_the_project(engine, env, tmp_path,
         str(elsewhere),  # install --scope user
     ]
     assert "install jira-context@acme-plugins --scope project" in lines[1]
+
+
+def test_malformed_lock_entries_are_skipped_and_reported(engine, env):
+    engine.apply(engine.plan_install(_item(engine, "api-conventions"), "claude-code", Scope.USER))
+    data = json.loads(env.paths.user_lock.read_text())
+    data["entries"] += [7, {**data["entries"][0], "item_id": "ghost", "kind": "gadget"}]
+    env.paths.user_lock.write_text(json.dumps(data))
+    items = {i.name: i for i in engine.installed("claude-code")}
+    assert items["api-conventions"].meta["lock"].item_id == "api-conventions"
+    assert len(engine.lock_errors) == 2 and all("lock.json: entry" in e for e in engine.lock_errors)
+    engine.catalog("claude-code")

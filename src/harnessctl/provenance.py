@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from harnessctl.jsonio import JsonFileError, read_json
-from harnessctl.model import InstalledItem, Provenance, SourceSpec, Trust
+from harnessctl.model import InstalledItem, Kind, Provenance, SourceSpec, Trust
 
 LOCK_VERSION = 1
 
@@ -35,7 +35,26 @@ class LockEntry:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
-def read_lock(path: Path) -> list[LockEntry]:
+def _entry_problem(raw: object) -> str | None:
+    if not isinstance(raw, dict):
+        return "is not an object"
+    for key in ("item_id", "source", "harness", "version"):
+        if not isinstance(raw.get(key), str):
+            return f"{key} is missing or not a string"
+    if raw.get("kind") not in {k.value for k in Kind}:
+        return f"unknown kind {raw.get('kind')!r}"
+    if not isinstance(raw.get("locations"), list) or not all(isinstance(x, str) for x in raw["locations"]):
+        return "locations must be a list of strings"
+    if not isinstance(raw.get("files"), dict):
+        return "files must be an object"
+    if not isinstance(raw.get("settings", {}), dict):
+        return "settings must be an object"
+    return None
+
+
+def read_lock(path: Path, problems: list[str] | None = None) -> list[LockEntry]:
+    """The lock's entries. A file that is not a lockfile raises JsonFileError; a malformed entry
+    is skipped, with a message appended to `problems` if given."""
     data = read_json(path, default={"version": LOCK_VERSION, "entries": []})
     if (
         not isinstance(data, dict)
@@ -43,13 +62,23 @@ def read_lock(path: Path) -> list[LockEntry]:
         or not isinstance(data.get("entries"), list)
     ):
         raise JsonFileError(path, f"not a harnessctl lockfile (version {LOCK_VERSION})")
-    try:
-        return [LockEntry.from_json(e) for e in data["entries"]]
-    except TypeError as exc:
-        raise JsonFileError(path, f"invalid lock entry: {exc}") from exc
+    entries: list[LockEntry] = []
+    for n, raw in enumerate(data["entries"], start=1):
+        problem = _entry_problem(raw)
+        if problem is None:
+            try:
+                entries.append(LockEntry.from_json(raw))
+                continue
+            except TypeError as exc:
+                problem = str(exc)
+        if problems is not None:
+            problems.append(f"{path}: entry {n} skipped: {problem}")
+    return entries
 
 
-def _same(raw: dict, entry: LockEntry) -> bool:
+def _same(raw: object, entry: LockEntry) -> bool:
+    if not isinstance(raw, dict):
+        return False
     return (raw.get("item_id"), raw.get("source"), raw.get("harness")) == (
         entry.item_id,
         entry.source,

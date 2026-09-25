@@ -49,7 +49,11 @@ def ensure_json_writable(path: Path, manual: str = "") -> None:
     if not path.exists():
         return
     hint = f" Make the change by hand: {manual}." if manual else ""
-    if has_comments(path.read_text()):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PlanError(f"{path}: {exc}. Fix the file first.") from exc
+    if has_comments(text):
         raise PlanError(f"{path} contains comments, which harnessctl will not rewrite.{hint}")
     try:
         read_json(path)

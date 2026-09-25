@@ -48,3 +48,26 @@ def test_default_command_launches_the_tui(env, monkeypatch):
     assert main([]) == 0
     assert launched == [env.project]
     assert env.paths.state.is_dir()
+
+
+@pytest.mark.parametrize(
+    "content", ["[]", '{"name": "m", "plugins": ["x"]}', '{"name": "m", "plugins": [{"name": "--x"}]}']
+)
+def test_validate_malformed_marketplace_reports_instead_of_crashing(tmp_path, capsys, content):
+    write(tmp_path / ".claude-plugin" / "marketplace.json", content)
+    assert main(["validate", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert "marketplace.json" in captured.err and "Traceback" not in captured.err
+
+
+def test_validate_rejects_a_hooks_fragment_of_the_wrong_shape(tmp_path, capsys):
+    root = tmp_path / "cat"
+    shutil.copytree(EXAMPLES, root)
+    write(root / "items" / "h" / "s.sh", "echo\n")
+    write(
+        root / "items" / "h" / "item.toml",
+        'id = "h"\nkind = "hook"\nversion = "1.0.0"\n[variants.claude-code]\ntype = "files"\n'
+        'files = { "s.sh" = "hooks/s.sh" }\n[variants.claude-code.settings]\nhooks.PreToolUse = "oops"\n',
+    )
+    assert main(["validate", str(root)]) == 1
+    assert "hooks.PreToolUse must be a list of matcher groups" in capsys.readouterr().err

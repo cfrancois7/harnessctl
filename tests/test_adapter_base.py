@@ -87,3 +87,14 @@ def test_park_and_unpark_a_skill(tmp_path):
 
     assert apply(Plan.build("unpark", "claude-code", Scope.USER, unpark_steps(parked[0])), tmp_path / "b").ok
     assert (folder / "SKILL.md").is_file() and not pdir.exists()
+
+
+def test_ensure_json_writable_refuses_undecodable_files(tmp_path):
+    bad = tmp_path / "settings.json"
+    bad.write_bytes(b'{"a": "caf\xe9"}')
+    with pytest.raises(PlanError, match="Fix the file first"):
+        ensure_json_writable(bad)
+    folder = tmp_path / "dir.json"
+    folder.mkdir()
+    with pytest.raises(PlanError, match="Fix the file first"):
+        ensure_json_writable(folder)

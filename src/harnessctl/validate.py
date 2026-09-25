@@ -32,6 +32,38 @@ def _placeholders(value: object) -> set[str]:
     return set()
 
 
+def _check_hooks(hooks: object) -> list[str]:
+    """`hooks` must be {event: [{matcher?: str, hooks: [{type?: str, command: str, ...}]}]}."""
+    if not isinstance(hooks, dict):
+        return ["hooks must be a table of events"]
+    errors: list[str] = []
+    for event, groups in hooks.items():
+        where = f"hooks.{event}"
+        if not isinstance(groups, list) or not groups:
+            errors.append(f"{where} must be a list of matcher groups")
+            continue
+        for g, group in enumerate(groups):
+            at = f"{where}[{g}]"
+            if not isinstance(group, dict):
+                errors.append(f"{at} must be a table")
+                continue
+            if "matcher" in group and not isinstance(group["matcher"], str):
+                errors.append(f"{at}.matcher must be a string")
+            entries = group.get("hooks")
+            if not isinstance(entries, list) or not entries:
+                errors.append(f"{at}.hooks must be a non-empty list")
+                continue
+            for h, hook in enumerate(entries):
+                if not isinstance(hook, dict):
+                    errors.append(f"{at}.hooks[{h}] must be a table")
+                    continue
+                if not isinstance(hook.get("command"), str) or not hook["command"]:
+                    errors.append(f"{at}.hooks[{h}].command must be a non-empty string")
+                if "type" in hook and not isinstance(hook["type"], str):
+                    errors.append(f"{at}.hooks[{h}].type must be a string")
+    return errors
+
+
 def _check_skill(item_dir: Path, data: dict) -> list[str]:
     errors: list[str] = []
     if data.get("variants"):
@@ -77,6 +109,8 @@ def _check_variant(item_dir: Path, harness: str, v: object) -> list[str]:
         settings = v.get("settings", {})
         if not isinstance(settings, dict) or set(settings) - {"hooks"}:
             errors.append(f"{where}: settings may only contain hooks")
+        elif "hooks" in settings:
+            errors += [f"{where}: settings.{e}" for e in _check_hooks(settings["hooks"])]
         if settings and harness != "claude-code":
             errors.append(f"{where}: settings are only supported for claude-code")
         for name in sorted(_placeholders(settings) - {"scope_dir"}):
@@ -102,6 +136,11 @@ def check_item(item_dir: Path, data: dict) -> list[str]:
         Version(str(data.get("version", "")))
     except InvalidVersion:
         errors.append("version must be a semantic version")
+    if not isinstance(data.get("description", ""), str):
+        errors.append("description must be a string")
+    tags = data.get("tags", [])
+    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        errors.append("tags must be a list of strings")
     if kind == "skill":
         errors += _check_skill(item_dir, data)
     elif kind in {"hook", "plugin"}:

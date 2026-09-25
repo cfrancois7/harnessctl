@@ -149,7 +149,7 @@ class Engine:
         locks: dict[Scope, list[LockEntry]] = {}
         for scope in self.scopes():
             try:
-                locks[scope] = read_lock(self.lock_path(scope))
+                locks[scope] = read_lock(self.lock_path(scope), self.lock_errors)
             except JsonFileError as exc:
                 locks[scope] = []
                 self.lock_errors.append(str(exc))

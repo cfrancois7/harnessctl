@@ -43,8 +43,8 @@ def _market_url(source: dict) -> str | None:
     match source.get("source"):
         case "github" if source.get("repo"):
             return f"https://github.com/{source['repo']}"
-        case "git" | "url":
-            return source.get("url")
+        case "git" | "url" if isinstance(source.get("url"), str):
+            return source["url"]
     return None
 
 
@@ -185,24 +185,29 @@ class ClaudeCodeAdapter:
 
     def _scan_plugins(self, scope: Scope, project: Path | None) -> list[InstalledItem]:
         plugins_dir = self.claude_dir / "plugins"
+        installed_path = plugins_dir / "installed_plugins.json"
         try:
-            installed = read_json(plugins_dir / "installed_plugins.json", default={}).get("plugins", {})
-        except JsonFileError as exc:
-            return [self._broken(scope, exc.path, Kind.PLUGIN, exc)]
-        try:
+            data = read_json(installed_path, default={})
             markets = read_json(plugins_dir / "known_marketplaces.json", default={})
         except JsonFileError as exc:
             return [self._broken(scope, exc.path, Kind.PLUGIN, exc)]
+        installed = data.get("plugins", {}) if isinstance(data, dict) else None
+        if not isinstance(installed, dict):
+            error = ValueError(f"{installed_path}: not a JSON object with a plugins object")
+            return [self._broken(scope, installed_path, Kind.PLUGIN, error)]
+        markets = markets if isinstance(markets, dict) else {}
         try:
-            enabled = read_json(self.settings_path(scope, project), default={}).get("enabledPlugins", {})
-        except JsonFileError, AttributeError:
-            enabled = {}  # the settings file itself is reported by _scan_hooks
+            settings = read_json(self.settings_path(scope, project), default={})
+        except JsonFileError:
+            settings = {}  # the settings file itself is reported by _scan_hooks
+        enabled = settings.get("enabledPlugins", {}) if isinstance(settings, dict) else {}
+        enabled = enabled if isinstance(enabled, dict) else {}
         items: list[InstalledItem] = []
         for pid, records in sorted(installed.items()):
             for rec in records if isinstance(records, list) else []:
-                if rec.get("scope") != scope.value:
+                if not isinstance(rec, dict) or rec.get("scope") != scope.value:
                     continue
-                if scope is Scope.PROJECT and Path(rec.get("projectPath", "")) != project:
+                if scope is Scope.PROJECT and Path(str(rec.get("projectPath", ""))) != project:
                     continue
                 items += self._plugin_items(pid, rec, scope, bool(enabled.get(pid, False)), markets)
         return items
@@ -211,16 +216,19 @@ class ClaudeCodeAdapter:
         self, pid: str, rec: dict, scope: Scope, on: bool, markets: dict
     ) -> list[InstalledItem]:
         name, _, market = pid.partition("@")
-        install_path = Path(rec.get("installPath", ""))
+        install_path = Path(str(rec.get("installPath", "")))
         meta = {"plugin_id": pid, "version": rec.get("version"), "install_path": str(install_path)}
-        repo = _market_url(markets.get(market, {}).get("source", {}))
+        market_entry = markets.get(market)
+        source = market_entry.get("source") if isinstance(market_entry, dict) else None
+        repo = _market_url(source) if isinstance(source, dict) else None
         if repo:
             meta["repo_url"] = repo
         try:
             manifest = read_json(install_path / ".claude-plugin" / "plugin.json", default={})
         except JsonFileError:
             manifest = {}
-        detail = f"{manifest.get('description', '')}\n\n`{pid}` · version {rec.get('version', '?')}".strip()
+        description = manifest.get("description", "") if isinstance(manifest, dict) else ""
+        detail = f"{description}\n\n`{pid}` · version {rec.get('version', '?')}".strip()
         plugin = InstalledItem(
             self.id, scope, Kind.PLUGIN, name, f"claude-plugin:{pid}", enabled=on, detail=detail, meta=meta
         )

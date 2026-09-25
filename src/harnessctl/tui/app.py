@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -27,6 +28,7 @@ from harnessctl.tui.modals import PlanModal, ScopePicker
 from harnessctl.tui.text import short_path, sync_summary
 from harnessctl.tui.views import CatalogView, InstalledView, ItemList, ListDetailView, SourcesView
 
+log = logging.getLogger(__name__)
 MIN_WIDTH, MIN_HEIGHT, NARROW_BELOW = 50, 15, 100
 
 
@@ -155,9 +157,16 @@ class HarnessApp(App[None]):
         # in flight, self.harness may already point at the new one by the time we finish.
         harness = self.harness
         signature = self._current_signature()
-        snap = Snapshot(
-            self.engine.installed(harness), self.engine.catalog(harness), list(self.engine.sources)
-        )
+        try:
+            snap = Snapshot(
+                self.engine.installed(harness), self.engine.catalog(harness), list(self.engine.sources)
+            )
+        except Exception as exc:  # noqa: BLE001 - a scan must never take the app down
+            log.exception("rescan failed")
+            if not get_current_worker().is_cancelled:
+                self._signature = signature  # don't re-fail on every poll until something changes
+                self.call_from_thread(self._report, f"{type(exc).__name__}: {exc}", "Scan failed", True)
+            return
         lock_errors = list(self.engine.lock_errors)
         # A newer rescan (harness switch, poll, manual `r`) may have superseded this one
         # while installed()/catalog() were running on this thread — cancellation of a
@@ -236,6 +245,10 @@ class HarnessApp(App[None]):
         except (PlanError, ConfigError) as exc:
             self._report(str(exc), "Cannot do that", error=True)
             return
+        except Exception as exc:  # noqa: BLE001 - a bad file on disk must not crash the UI
+            log.exception("planning failed")
+            self._report(f"{type(exc).__name__}: {exc}", "Cannot do that", error=True)
+            return
         # Plan-time "left in place" warnings (e.g. a tampered lock entry) travel on the plan
         # itself (see Plan.warnings) and are rendered inside PlanModal — not read off shared
         # engine.lock_errors, which a concurrent rescan thread can reset or consume first.
@@ -252,6 +265,9 @@ class HarnessApp(App[None]):
             result = self.engine.apply(plan)
         except PlanConflict as exc:
             self.call_from_thread(self._report, f"{exc}\nNothing was changed.", plan.title, True)
+        except Exception as exc:  # noqa: BLE001 - e.g. the backup folder cannot be written
+            log.exception("%s: apply failed", plan.title)
+            self.call_from_thread(self._report, f"{type(exc).__name__}: {exc}", plan.title, True)
         else:
             if result.ok:
                 self.call_from_thread(self._report, plan.reload_hint or "Done.", plan.title)

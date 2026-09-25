@@ -45,3 +45,17 @@ def test_sha256_file(tmp_path):
     f = write(tmp_path / "f", "x")
     assert sha256_file(f) == "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
     assert sha256_file(tmp_path / "missing") is None
+
+
+def test_read_json_unreadable_raises_with_path(tmp_path):
+    folder = tmp_path / "settings.json"
+    folder.mkdir()
+    with pytest.raises(JsonFileError, match="settings.json"):
+        read_json(folder)
+    locked = write(tmp_path / "locked.json", "{}")
+    locked.chmod(0)
+    try:
+        with pytest.raises(JsonFileError, match="locked.json"):
+            read_json(locked)
+    finally:
+        locked.chmod(0o600)
