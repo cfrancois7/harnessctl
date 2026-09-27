@@ -218,14 +218,14 @@ class Engine:
         )
 
     def find_installed(self, item: InstalledItem) -> InstalledItem | None:
-        """The same item in a fresh scan, matched on scope, kind, original location and state."""
-        key = (item.scope, item.kind, item.origin_location, item.enabled)
+        """The same item in a fresh scan, matched on scope, kind and location. `location` (not
+        `origin_location`) is used because several parked copies of one skill can share an
+        origin location (park_dir suffixes `-2`, `-3`, ...); `location` includes the park folder
+        for a parked item (`<original>::parked::<folder>`) and equals `origin_location` for an
+        enabled one, so it identifies one exact copy."""
+        key = (item.scope, item.kind, item.location)
         return next(
-            (
-                i
-                for i in self.installed(item.harness)
-                if (i.scope, i.kind, i.origin_location, i.enabled) == key
-            ),
+            (i for i in self.installed(item.harness) if (i.scope, i.kind, i.location) == key),
             None,
         )
 

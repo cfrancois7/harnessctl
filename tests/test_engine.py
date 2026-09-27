@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -296,3 +297,31 @@ def test_find_installed_returns_the_item_from_a_fresh_scan(engine, env):
     assert fresh is not old and fresh.status is Status.MODIFIED
     assert engine.apply(engine.plan_toggle(fresh)).ok
     assert engine.find_installed(old) is None  # disabled now: a different item
+
+
+def test_find_installed_picks_the_exact_parked_copy_among_several(engine, env):
+    """Two parked copies of the same skill share an origin_location (park_dir suffixes -2, -3,
+    ... when a location is parked more than once); find_installed must not confuse them."""
+    item = _item(engine, "api-conventions")
+    engine.apply(engine.plan_install(item, "claude-code", Scope.USER))
+    assert engine.apply(engine.plan_toggle(_installed(engine, "api-conventions"))).ok
+    old1 = _installed(engine, "api-conventions")
+    assert old1.enabled is False
+
+    engine.apply(engine.plan_install(item, "claude-code", Scope.USER))  # reinstall over the free spot
+    assert engine.apply(engine.plan_toggle(_installed(engine, "api-conventions"))).ok
+    parked = [i for i in engine.installed("claude-code") if i.name == "api-conventions" and not i.enabled]
+    assert len(parked) == 2
+    old2 = next(i for i in parked if i.location != old1.location)
+
+    assert old1.origin_location == old2.origin_location  # same origin: this is the ambiguity
+    assert old1.location != old2.location  # but distinct parking folders
+
+    fresh1 = engine.find_installed(old1)
+    fresh2 = engine.find_installed(old2)
+    assert fresh1 is not None and fresh1.location == old1.location
+    assert fresh2 is not None and fresh2.location == old2.location
+
+    shutil.rmtree(Path(old1.meta["park_dir"]))  # only old1's copy vanishes
+    assert engine.find_installed(old1) is None
+    assert engine.find_installed(old2) is not None and engine.find_installed(old2).location == old2.location
