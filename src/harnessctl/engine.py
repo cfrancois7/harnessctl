@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +122,23 @@ class Engine:
     def load_sources(self, fetch: bool) -> None:
         specs, self.config_errors = load_sources(self.paths)
         self.sources = [sync_source(s, self.paths.sources_cache, fetch=fetch) for s in specs]
+
+    def reload_sources(self, on_fetch: Callable[[str], None] | None = None) -> list[str]:
+        """Re-read corporate.toml and config.toml. Unchanged sources keep their state; new or
+        changed ones are fetched (git: call from a worker), each announced through `on_fetch`
+        first; removed ones are dropped."""
+        specs, self.config_errors = load_sources(self.paths)
+        known = {s.spec: s for s in self.sources}
+        states: list[SourceState] = []
+        for spec in specs:
+            state = known.get(spec)
+            if state is None:
+                if on_fetch is not None:
+                    on_fetch(spec.name)
+                state = sync_source(spec, self.paths.sources_cache, fetch=True)
+            states.append(state)
+        self.sources = states
+        return self.config_errors
 
     def refresh_source(self, name: str) -> SourceState:
         index = next(n for n, s in enumerate(self.sources) if s.spec.name == name)

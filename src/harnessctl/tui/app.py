@@ -89,6 +89,7 @@ class HarnessApp(App[None]):
         self.narrow = False
         self.last_outcome = ""
         self._signature: tuple | None = None
+        self._sources_sig: tuple | None = None
         self._shown_lock_errors: set[str] = set()
 
     def compose(self) -> ComposeResult:
@@ -110,6 +111,7 @@ class HarnessApp(App[None]):
         self.query_one(InstalledView).query_one(ItemList).focus()
         self.rescan()
         self.sync_sources()
+        self._sources_sig = self._sources_signature()
         self.set_interval(self.poll_interval, self.poll_changes)
 
     # --- layout ------------------------------------------------------------------------------
@@ -148,6 +150,19 @@ class HarnessApp(App[None]):
 
     def _after_sync(self) -> None:
         for problem in self.engine.config_errors:
+            self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self.rescan()
+
+    @work(thread=True, group="sources")
+    def reload_sources(self) -> None:
+        def fetching(name: str) -> None:
+            self.call_from_thread(self.notify, f"Fetching source {name}…", title="Sources", timeout=6)
+
+        errors = self.engine.reload_sources(on_fetch=fetching)
+        self.call_from_thread(self._sources_reloaded, errors)
+
+    def _sources_reloaded(self, errors: list[str]) -> None:
+        for problem in errors:
             self.notify(problem, title="Configuration", severity="warning", timeout=10)
         self.rescan()
 
@@ -199,16 +214,27 @@ class HarnessApp(App[None]):
         sync = sync_summary(self.engine.sources, datetime.now(UTC), self.syncing)
         self.query_one(HeaderBar).update_from(self.engine.adapter(self.harness).label, where, sync)
 
+    @staticmethod
+    def _stat(path: Path) -> tuple[str, int | None]:
+        try:
+            return (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return (str(path), None)
+
     def _current_signature(self) -> tuple:
-        signature = []
-        for path in self.engine.watched_paths():
-            try:
-                signature.append((str(path), path.stat().st_mtime_ns))
-            except OSError:
-                signature.append((str(path), None))
-        return tuple(signature)
+        return tuple(self._stat(path) for path in self.engine.watched_paths())
+
+    def _sources_signature(self) -> tuple:
+        paths = self.engine.paths
+        return (self._stat(paths.corporate_toml), self._stat(paths.config_toml))
 
     def poll_changes(self) -> None:
+        sources = self._sources_signature()
+        if self._sources_sig is not None and sources != self._sources_sig:
+            self._sources_sig = sources
+            self.reload_sources()  # it rescans when done
+            return
+        self._sources_sig = sources
         if self._signature is not None and self._current_signature() != self._signature:
             self.rescan()
 

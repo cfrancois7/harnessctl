@@ -215,3 +215,35 @@ async def test_filters_that_match_nothing_say_how_to_change_them(tui, tmp_path):
         assert _names(app, CatalogView) == []
         detail = app.query_one(CatalogView).query_one(DetailPane).markdown
         assert "No item matches these filters" in detail and "`s`" in detail and "`esc`" in detail
+
+
+async def test_editing_config_toml_reloads_sources(tui, tmp_path):
+    public = tmp_path / "pub"
+    skill(public / "skills" / "tdd")
+    make_repo(None, public)
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{public.as_uri()}"\n')
+        app.poll_changes()
+        await settle(pilot)
+        assert "Fetching source pub…" in notifications  # a fetch may take long: say so first
+        await pilot.press("2")
+        assert "tdd" in _names(app, CatalogView)
+
+
+async def test_a_broken_config_toml_is_reported_and_the_app_keeps_going(tui):
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")
+        app.poll_changes()
+        await settle(pilot)
+        assert app.is_running
+        assert any("config.toml" in m for m in notifications)
+        await pilot.press("2")
+        assert "api-conventions" in _names(app, CatalogView)  # corporate sources still there

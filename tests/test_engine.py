@@ -345,3 +345,19 @@ def test_removing_a_source_keeps_its_installed_items_as_unknown(engine, env, tmp
     tdd = _installed(engine, "tdd")
     assert tdd.provenance.origin == "unknown"
     assert (env.home / ".claude" / "skills" / "tdd" / "SKILL.md").is_file()
+
+
+def test_reload_sources_keeps_unchanged_states_and_fetches_new_ones(engine, env, tmp_path):
+    acme_state = engine.sources[0]
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+    write(env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{other.as_uri()}"\n')
+    fetched: list[str] = []
+    assert engine.reload_sources(on_fetch=fetched.append) == []
+    assert fetched == ["pub"]
+    assert engine.sources[0] is acme_state  # not fetched again
+    assert [i.id for i in engine.sources[1].items] == ["tdd"]
+    env.paths.config_toml.write_text("")
+    engine.reload_sources()
+    assert [s.spec.name for s in engine.sources] == ["acme"]
