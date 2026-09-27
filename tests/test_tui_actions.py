@@ -216,3 +216,17 @@ async def test_install_of_an_unavailable_plugin_says_why(tui):
         assert app.last_outcome == (
             "jira-context: the claude CLI is not on PATH, so plugins cannot be installed."
         )
+
+
+async def test_failure_before_any_step_is_reported_as_is(tui, monkeypatch):
+    from harnessctl.planner import ApplyResult
+
+    message = "cannot back up before applying: disk full; nothing was changed"
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        monkeypatch.setattr(app.engine, "apply", lambda plan: ApplyResult(False, error=message))
+        await pilot.press("space", "enter")
+        await settle(pilot)
+        assert app.is_running
+        assert app.last_outcome == message

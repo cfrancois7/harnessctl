@@ -271,6 +271,8 @@ class HarnessApp(App[None]):
         else:
             if result.ok:
                 self.call_from_thread(self._report, plan.reload_hint or "Done.", plan.title)
+            elif result.failed_step is None:
+                self.call_from_thread(self._report, result.error or "Nothing was changed.", plan.title, True)
             else:
                 message = (
                     f"Step {result.failed_step + 1} failed: {result.error}\nEvery change was rolled back."

@@ -326,3 +326,48 @@ def test_edit_json_reads_utf8_whatever_the_locale(tmp_path):
     ).stdout
     assert out.strip() == "True None"
     assert json.loads(target.read_text(encoding="utf-8")) == {"name": "café", "k": 1}
+
+
+# --- Task 6: honest diffs and a clean backup failure ------------------------------------------
+
+
+def _append(value):
+    def edit(data):
+        data = data or {"items": []}
+        data["items"] = [*data["items"], value]
+        return data
+
+    return edit
+
+
+def _drop(value):
+    def edit(data):
+        data = data or {"items": []}
+        data["items"] = [x for x in data["items"] if x != value]
+        return data
+
+    return edit
+
+
+def test_plan_diff_shows_what_the_whole_plan_leaves_in_a_file(tmp_path):
+    settings = write(tmp_path / "settings.json", '{\n  "items": [\n    "old"\n  ]\n}\n')
+    plan = _plan(EditJson(settings, _drop("old"), "−old"), EditJson(settings, _append("new"), "+new"))
+    diff = plan_diff(plan)
+    assert diff.count("--- ") == 1  # one diff per file, not one per step
+    assert '-    "old"' in diff and '+    "new"' in diff
+    assert '     "old"' not in diff  # "old" must not survive as a context line
+
+
+def test_backup_failure_changes_nothing(tmp_path, monkeypatch):
+    target = write(tmp_path / "keep.txt", "original")
+
+    def broken_copy(src, dst):
+        raise PermissionError(13, "Permission denied", str(dst))
+
+    monkeypatch.setattr(planner, "_copy", broken_copy)
+    result = apply(_plan(WriteFile(target, b"changed")), tmp_path / "backups")
+    assert not result.ok and result.failed_step is None
+    assert result.error.startswith("cannot back up before applying: ")
+    assert "Permission denied" in result.error and result.error.endswith("; nothing was changed")
+    assert target.read_text() == "original"
+    assert list((tmp_path / "backups").iterdir()) == []
