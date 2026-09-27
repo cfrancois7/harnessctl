@@ -1,4 +1,5 @@
-"""Pinned frames at the sizes the spec names (120×30 wide, 80×24 standard, 64×30 split)."""
+"""Pinned frames at the sizes the spec names (120×30 wide, 80×24 standard, 64×30 split, and just
+under the 50×15 floor)."""
 
 import hashlib
 import os
@@ -61,3 +62,19 @@ def test_plan_modal(snap_compare, tui, monkeypatch):
         await settle(pilot)
 
     assert snap_compare(tui.app(), terminal_size=(120, 30), run_before=run_before)
+
+
+def test_sources_split(snap_compare, tui):
+    # 64 columns: list only. The detail pane would show the source's file:// URL, which contains
+    # pytest's temporary path and would differ on every run.
+    async def run_before(pilot):
+        await settle(pilot)
+        await pilot.press("3")
+        await settle(pilot)
+
+    assert snap_compare(tui.app(), terminal_size=(64, 30), run_before=run_before)
+
+
+def test_too_small(snap_compare, tui):
+    # One cell under the 50×15 floor: the only thing on screen is the message naming it.
+    assert snap_compare(tui.app(), terminal_size=(49, 14), run_before=settle)

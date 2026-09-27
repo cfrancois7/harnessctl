@@ -10,7 +10,7 @@ def test_version_flag_prints_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == "harnessctl 0.1.0"
+    assert capsys.readouterr().out.strip() == "harnessctl 0.2.0"
 
 
 def test_env_fixture_isolates_home(env):

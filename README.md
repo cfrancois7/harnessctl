@@ -26,11 +26,15 @@ harnessctl --project DIR  # or for another one
 |---|---|
 | everywhere | `1` `2` `3` tabs · `h` switch harness · `r` rescan · `/` filter · `?` help · `q` quit |
 | Installed | `space` enable/disable · `u` update · `d` remove · `o` open in `$EDITOR` |
-| Catalog | `i` install (then pick user or project scope) |
-| Sources | `a` add · `r` refresh (replaces rescan here) · `d` remove |
-| plan | `enter` apply · `v` view diff · `esc` cancel |
+| Catalog | `i` install (then pick user or project scope) · `s` filter by source · `t` filter by type · `esc` clear filters. `✗` marks an item that cannot be installed here; the detail says why. |
+| Sources | `a` add · `r` refresh (replaces rescan here) · `d` remove (asks first; `y` confirms) |
+| plan | `enter` apply · `v` view diff · `esc` cancel. If a file changed since the plan was made, nothing is changed and you are offered to re-plan. |
 
 Below 100 columns the detail pane is hidden: `enter` opens it full-screen, `esc` goes back.
+
+Editing `corporate.toml` or `config.toml` while harnessctl runs reloads the sources within a
+couple of seconds. Claude plugins show as unavailable (`✗`) in the Catalog when the `claude` CLI
+is not on `PATH`. Press `?` for every key, including those not shown in the footer.
 
 ## Configuration
 
