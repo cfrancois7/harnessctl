@@ -275,3 +275,14 @@ def test_plans_name_their_source_and_commit(engine, env):
     assert engine.plan_remove(inst).origin == f"acme@{commit[:7]}"
     skill(env.home / ".claude" / "skills" / "mine")
     assert engine.plan_toggle(_installed(engine, "mine")).origin == ""
+
+
+def test_plugin_unavailable_without_the_claude_cli_until_it_appears(engine, env):
+    entries = {e.item.id: e for e in engine.catalog("claude-code")}
+    assert entries["jira-context"].available is False
+    assert entries["jira-context"].reason == "the claude CLI is not on PATH, so plugins cannot be installed"
+    assert entries["api-conventions"].available and entries["api-conventions"].reason is None
+
+    stub_command(env.bin, "claude", env.home / "claude-calls.log")  # installed while running
+    entries = {e.item.id: e for e in engine.catalog("claude-code")}
+    assert entries["jira-context"].available is True and entries["jira-context"].reason is None

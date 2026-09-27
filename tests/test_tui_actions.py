@@ -205,3 +205,14 @@ async def test_plan_modal_names_source_and_commit(tui):
         assert isinstance(app.screen, PlanModal)
         where = str(app.screen.query_one("#plan-where", Static).render())
         assert where.startswith("Claude Code · project scope · acme@")
+
+
+async def test_install_of_an_unavailable_plugin_says_why(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "down", "down", "i")
+        assert not isinstance(app.screen, ScopePicker)
+        assert app.last_outcome == (
+            "jira-context: the claude CLI is not on PATH, so plugins cannot be installed."
+        )

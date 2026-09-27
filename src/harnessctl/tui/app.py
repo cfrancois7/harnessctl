@@ -281,7 +281,7 @@ class HarnessApp(App[None]):
     def install(self, entry: CatalogEntry) -> None:
         adapter = self.engine.adapter(self.harness)
         if not entry.available:
-            self._report(f"{entry.item.id} has no {adapter.label} variant.", "Cannot do that", error=True)
+            self._report(f"{entry.item.id}: {entry.reason}.", "Cannot do that", error=True)
             return
         scopes = self.engine.scopes()
         if len(scopes) == 1:

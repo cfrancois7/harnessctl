@@ -55,8 +55,9 @@ KIND_ORDER = {Kind.SKILL: 0, Kind.HOOK: 1, Kind.PLUGIN: 2}
 class CatalogEntry:
     item: CatalogItem
     trust: Trust
-    available: bool  # the item has a variant for the harness being viewed
+    available: bool  # the item can be installed for the harness being viewed
     installed: list[Scope]
+    reason: str | None = None  # why it cannot be installed, when it cannot
 
 
 def group_of(item: InstalledItem) -> Kind:
@@ -217,6 +218,7 @@ class Engine:
         )
 
     def catalog(self, harness: str) -> list[CatalogEntry]:
+        adapter = self.adapter(harness)
         locks = self._locks()
         native = {
             i.location: i.scope for i in self.installed(harness) if i.location.startswith("claude-plugin:")
@@ -233,7 +235,10 @@ class Engine:
                 if isinstance(variant, ClaudePluginVariant) and not scopes:
                     found = native.get(f"claude-plugin:{variant.plugin_id}")
                     scopes = [found] if found else []
-                entries.append(CatalogEntry(item, state.spec.trust, variant is not None, scopes))
+                reason = (
+                    f"no {adapter.label} variant" if variant is None else adapter.unavailable_reason(variant)
+                )
+                entries.append(CatalogEntry(item, state.spec.trust, reason is None, scopes, reason))
         return entries
 
     # --- planning ----------------------------------------------------------------------------
