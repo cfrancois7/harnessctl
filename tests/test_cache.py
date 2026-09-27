@@ -75,6 +75,22 @@ def test_a_source_whose_items_cannot_load_is_unavailable_not_a_crash(tmp_path, m
     assert "cannot load items" in state.error and "has no attribute" in state.error
 
 
+def test_a_changed_url_reclones_from_the_new_repo_instead_of_fetching_the_old_one(tmp_path):
+    repo_a = make_repo(EXAMPLES, tmp_path / "remote-a")
+    cache_root = tmp_path / "cache"
+    first = sync_source(_spec(repo_a.as_uri()), cache_root)
+    assert {i.id for i in first.items} == {"api-conventions", "block-secrets-read", "jira-context"}
+
+    other = tmp_path / "remote-b-src"
+    shutil.copytree(EXAMPLES, other)
+    shutil.rmtree(other / "items" / "jira-context")
+    repo_b = make_repo(None, other)
+
+    second = sync_source(_spec(repo_b.as_uri()), cache_root)
+    assert second.status == "ok" and second.error is None
+    assert {i.id for i in second.items} == {"api-conventions", "block-secrets-read"}
+
+
 def test_marketplace_that_is_a_list_leaves_the_source_unavailable_with_a_warning(tmp_path):
     remote = tmp_path / "remote"
     write(remote / ".claude-plugin" / "marketplace.json", "[]")

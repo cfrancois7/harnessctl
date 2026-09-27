@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from harnessctl.model import CatalogItem, SourceFormat, SourceSpec
+from harnessctl.provenance import normalize_url
 from harnessctl.sources.formats import detect_format, load_items
 
 log = logging.getLogger(__name__)
@@ -52,26 +53,45 @@ def _git(args: list[str], cwd: Path | None = None, timeout: int = 60) -> str:
     return result.stdout.strip()
 
 
+def _clone(spec: SourceSpec, checkout: Path, timeout: int) -> None:
+    """Clone into a sibling tmp dir, then swap it in: a failed clone leaves any existing
+    checkout untouched."""
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    tmp = checkout.with_name(checkout.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    branch = ["--branch", spec.ref] if spec.ref else []
+    _git(["clone", "--depth", "1", "--quiet", *branch, spec.url, str(tmp)], timeout=timeout)
+    shutil.rmtree(checkout, ignore_errors=True)
+    tmp.rename(checkout)
+
+
+def _remote_url(checkout: Path, timeout: int) -> str | None:
+    try:
+        return _git(["remote", "get-url", "origin"], cwd=checkout, timeout=timeout)
+    except GitError:
+        return None
+
+
 def _fetch(spec: SourceSpec, checkout: Path, timeout: int) -> None:
     if (checkout / ".git").is_dir():
-        _git(
-            ["fetch", "--depth", "1", "--quiet", "origin", spec.ref or "HEAD"],
-            cwd=checkout,
-            timeout=timeout,
-        )
-        _git(
-            ["reset", "--hard", "--quiet", "FETCH_HEAD"],
-            cwd=checkout,
-            timeout=timeout,
-        )
+        current = _remote_url(checkout, timeout)
+        if current is None or normalize_url(current) != normalize_url(spec.url):
+            # The source's url changed since the last sync: `origin` still points at the old
+            # repo, so fetching it would silently keep serving stale content. Re-clone instead.
+            _clone(spec, checkout, timeout)
+        else:
+            _git(
+                ["fetch", "--depth", "1", "--quiet", "origin", spec.ref or "HEAD"],
+                cwd=checkout,
+                timeout=timeout,
+            )
+            _git(
+                ["reset", "--hard", "--quiet", "FETCH_HEAD"],
+                cwd=checkout,
+                timeout=timeout,
+            )
     else:
-        checkout.parent.mkdir(parents=True, exist_ok=True)
-        tmp = checkout.with_name(checkout.name + ".tmp")
-        shutil.rmtree(tmp, ignore_errors=True)
-        branch = ["--branch", spec.ref] if spec.ref else []
-        _git(["clone", "--depth", "1", "--quiet", *branch, spec.url, str(tmp)], timeout=timeout)
-        shutil.rmtree(checkout, ignore_errors=True)
-        tmp.rename(checkout)
+        _clone(spec, checkout, timeout)
     (checkout / ".git" / MARKER).touch()
 
 
