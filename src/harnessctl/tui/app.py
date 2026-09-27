@@ -389,7 +389,11 @@ class HarnessApp(App[None]):
 
     @work(thread=True, group="sources")
     def refresh_source(self, name: str) -> None:
-        state = self.engine.refresh_source(name)
+        try:
+            state = self.engine.refresh_source(name)
+        except ConfigError as exc:
+            self.call_from_thread(self._report, str(exc), "Cannot refresh source", True)
+            return
         self.call_from_thread(
             self._report, self._source_outcome(state), "Source refreshed", state.status != "ok"
         )

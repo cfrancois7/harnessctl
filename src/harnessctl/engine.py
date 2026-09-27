@@ -150,9 +150,12 @@ class Engine:
 
     def refresh_source(self, name: str) -> SourceState:
         with self._sources_lock:
-            index = next(n for n, s in enumerate(self.sources) if s.spec.name == name)
-            self.sources[index] = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
-            return self.sources[index]
+            index = next((n for n, s in enumerate(self.sources) if s.spec.name == name), None)
+            if index is None:
+                raise ConfigError(f"source '{name}' is no longer configured")
+            state = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
+            self.sources = [state if i == index else s for i, s in enumerate(self.sources)]
+            return state
 
     def add_source(
         self, url: str, name: str | None = None, ref: str | None = None, subdir: str = ""

@@ -395,3 +395,9 @@ def test_a_reload_racing_a_slow_add_never_duplicates_or_refetches(engine, env, t
 
     assert [s.spec.name for s in engine.sources].count("pub") == 1
     assert fetched == []
+
+
+def test_refreshing_a_gone_source_is_reported_not_a_crash(engine):
+    with pytest.raises(ConfigError, match="source 'ghost' is no longer configured"):
+        engine.refresh_source("ghost")
+    assert [s.spec.name for s in engine.sources] == ["acme"]

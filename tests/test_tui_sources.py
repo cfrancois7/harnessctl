@@ -103,6 +103,18 @@ async def test_adding_a_duplicate_name_is_reported(tui, tmp_path):
         assert _sources(app) == ["acme"]
 
 
+async def test_refreshing_a_gone_source_is_reported_not_a_crash(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("3")
+        app.engine.sources = []  # removed from the engine behind the view's back
+        await pilot.press("r")
+        await settle(pilot)
+        assert app.is_running
+        assert app.last_outcome == "source 'acme' is no longer configured"
+
+
 async def test_adding_an_unreachable_url_is_reported(tui, tmp_path):
     app = tui.app()
     async with app.run_test(size=(120, 30)) as pilot:
