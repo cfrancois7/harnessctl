@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -361,3 +362,36 @@ def test_reload_sources_keeps_unchanged_states_and_fetches_new_ones(engine, env,
     env.paths.config_toml.write_text("")
     engine.reload_sources()
     assert [s.spec.name for s in engine.sources] == ["acme"]
+
+
+def test_a_reload_racing_a_slow_add_never_duplicates_or_refetches(engine, env, tmp_path, monkeypatch):
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+
+    import harnessctl.engine as engine_module
+
+    real_sync_source = engine_module.sync_source
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_sync_source(spec, cache_root, fetch=True, timeout=60):
+        if spec.name == "pub" and fetch:
+            started.set()
+            release.wait(5)
+        return real_sync_source(spec, cache_root, fetch=fetch, timeout=timeout)
+
+    monkeypatch.setattr(engine_module, "sync_source", slow_sync_source)
+
+    fetched: list[str] = []
+    adder = threading.Thread(target=engine.add_source, args=(other.as_uri(),), kwargs={"name": "pub"})
+    adder.start()
+    assert started.wait(5)
+    reloader = threading.Thread(target=lambda: engine.reload_sources(on_fetch=fetched.append))
+    reloader.start()
+    release.set()
+    adder.join(5)
+    reloader.join(5)
+
+    assert [s.spec.name for s in engine.sources].count("pub") == 1
+    assert fetched == []

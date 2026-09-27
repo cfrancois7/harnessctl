@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,11 @@ class Engine:
         self.sources: list[SourceState] = []
         self.config_errors: list[str] = []
         self.lock_errors: list[str] = []
+        # Source mutations (load/reload/add/refresh/remove) run in worker threads and each
+        # replaces or scans `self.sources`; without serializing them a slow fetch in one can
+        # overlap with another and duplicate, resurrect or misplace a source (see Task 9 review).
+        # The UI thread never calls these methods, so holding this for a whole fetch is safe.
+        self._sources_lock = threading.RLock()
 
     # --- harnesses and scopes ----------------------------------------------------------------
 
@@ -120,51 +126,56 @@ class Engine:
         return {s.name: s for s in load_sources(self.paths)[0]}
 
     def load_sources(self, fetch: bool) -> None:
-        specs, self.config_errors = load_sources(self.paths)
-        self.sources = [sync_source(s, self.paths.sources_cache, fetch=fetch) for s in specs]
+        with self._sources_lock:
+            specs, self.config_errors = load_sources(self.paths)
+            self.sources = [sync_source(s, self.paths.sources_cache, fetch=fetch) for s in specs]
 
     def reload_sources(self, on_fetch: Callable[[str], None] | None = None) -> list[str]:
         """Re-read corporate.toml and config.toml. Unchanged sources keep their state; new or
         changed ones are fetched (git: call from a worker), each announced through `on_fetch`
         first; removed ones are dropped."""
-        specs, self.config_errors = load_sources(self.paths)
-        known = {s.spec: s for s in self.sources}
-        states: list[SourceState] = []
-        for spec in specs:
-            state = known.get(spec)
-            if state is None:
-                if on_fetch is not None:
-                    on_fetch(spec.name)
-                state = sync_source(spec, self.paths.sources_cache, fetch=True)
-            states.append(state)
-        self.sources = states
-        return self.config_errors
+        with self._sources_lock:
+            specs, self.config_errors = load_sources(self.paths)
+            known = {s.spec: s for s in self.sources}
+            states: list[SourceState] = []
+            for spec in specs:
+                state = known.get(spec)
+                if state is None:
+                    if on_fetch is not None:
+                        on_fetch(spec.name)
+                    state = sync_source(spec, self.paths.sources_cache, fetch=True)
+                states.append(state)
+            self.sources = states
+            return self.config_errors
 
     def refresh_source(self, name: str) -> SourceState:
-        index = next(n for n, s in enumerate(self.sources) if s.spec.name == name)
-        self.sources[index] = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
-        return self.sources[index]
+        with self._sources_lock:
+            index = next(n for n, s in enumerate(self.sources) if s.spec.name == name)
+            self.sources[index] = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
+            return self.sources[index]
 
     def add_source(
         self, url: str, name: str | None = None, ref: str | None = None, subdir: str = ""
     ) -> SourceState:
-        wanted = normalize_url(url)
-        twin = next((s for s in self.specs().values() if normalize_url(s.url) == wanted), None)
-        if twin is not None:
-            raise ConfigError(f"{url} is already configured as source '{twin.name}'")
-        spec = SourceSpec(name or default_source_name(url), url, Trust.PUBLIC, ref or None, subdir)
-        add_public_source(self.paths, spec)
-        state = sync_source(spec, self.paths.sources_cache, fetch=True)
-        self.sources.append(state)
-        return state
+        with self._sources_lock:
+            wanted = normalize_url(url)
+            twin = next((s for s in self.specs().values() if normalize_url(s.url) == wanted), None)
+            if twin is not None:
+                raise ConfigError(f"{url} is already configured as source '{twin.name}'")
+            spec = SourceSpec(name or default_source_name(url), url, Trust.PUBLIC, ref or None, subdir)
+            add_public_source(self.paths, spec)
+            state = sync_source(spec, self.paths.sources_cache, fetch=True)
+            self.sources = [*self.sources, state]
+            return state
 
     def remove_source(self, name: str) -> None:
-        spec = self.specs().get(name)
-        if spec is not None and spec.trust is Trust.CORPORATE:
-            raise ConfigError("corporate sources are managed in corporate.toml")
-        remove_public_source(self.paths, name)
-        self.sources = [s for s in self.sources if s.spec.name != name]
-        shutil.rmtree(self.paths.sources_cache / name, ignore_errors=True)
+        with self._sources_lock:
+            spec = self.specs().get(name)
+            if spec is not None and spec.trust is Trust.CORPORATE:
+                raise ConfigError("corporate sources are managed in corporate.toml")
+            remove_public_source(self.paths, name)
+            self.sources = [s for s in self.sources if s.spec.name != name]
+            shutil.rmtree(self.paths.sources_cache / name, ignore_errors=True)
 
     def find_item(self, source: str, item_id: str) -> CatalogItem | None:
         for state in self.sources:
