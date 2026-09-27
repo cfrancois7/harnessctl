@@ -286,3 +286,13 @@ def test_plugin_unavailable_without_the_claude_cli_until_it_appears(engine, env)
     stub_command(env.bin, "claude", env.home / "claude-calls.log")  # installed while running
     entries = {e.item.id: e for e in engine.catalog("claude-code")}
     assert entries["jira-context"].available is True and entries["jira-context"].reason is None
+
+
+def test_find_installed_returns_the_item_from_a_fresh_scan(engine, env):
+    engine.apply(engine.plan_install(_item(engine, "api-conventions"), "claude-code", Scope.USER))
+    old = _installed(engine, "api-conventions")
+    (env.home / ".claude" / "skills" / "api-conventions" / "SKILL.md").write_text("edited")
+    fresh = engine.find_installed(old)
+    assert fresh is not old and fresh.status is Status.MODIFIED
+    assert engine.apply(engine.plan_toggle(fresh)).ok
+    assert engine.find_installed(old) is None  # disabled now: a different item

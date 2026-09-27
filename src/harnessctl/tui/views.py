@@ -16,6 +16,7 @@ from textual.widgets.option_list import Option
 
 from harnessctl.engine import CatalogEntry, group_of
 from harnessctl.model import InstalledItem, Kind, Trust
+from harnessctl.planner import Plan, PlanError
 from harnessctl.sources.cache import SourceState
 from harnessctl.tui.modals import DetailScreen
 from harnessctl.tui.text import (
@@ -203,9 +204,18 @@ class InstalledView(ListDetailView):
 
     def _propose(self, method: str) -> None:
         item = self.selected
-        if item is not None:
-            engine = self.app.engine
-            self.app.propose(lambda: getattr(engine, method)(item))
+        if item is None:
+            return
+        engine = self.app.engine
+
+        def replan() -> Plan:
+            # The old item may describe a file that changed: build again from a fresh scan.
+            fresh = engine.find_installed(item)
+            if fresh is None:
+                raise PlanError(f"{item.name} is no longer there; nothing to re-plan")
+            return getattr(engine, method)(fresh)
+
+        self.app.propose(lambda: getattr(engine, method)(item), replan)
 
     def action_toggle(self) -> None:
         self._propose("plan_toggle")

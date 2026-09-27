@@ -122,6 +122,48 @@ class PlanModal(ModalScreen[Plan | None]):
         self.app.push_screen(TextScreen("Diff", plan_diff(self.plan)))
 
 
+class ConfirmScreen(ModalScreen[bool]):
+    """A yes/no question. `yes_key` confirms; Esc and n decline. With yes_key="y" (destructive
+    actions), Enter declines too, so a reflexive Enter never confirms."""
+
+    BINDINGS = [
+        Binding("enter", "enter", show=False),
+        Binding("y", "y", show=False),
+        Binding("n", "no", show=False),
+        Binding("escape", "no", show=False),
+    ]
+    DEFAULT_CSS = """
+    ConfirmScreen { align: center middle; }
+    ConfirmScreen > Vertical { width: 80; max-width: 100%; height: auto; border: round $accent;
+                               background: $surface; padding: 1 2; }
+    ConfirmScreen #confirm-message { margin: 1 0; }
+    """
+
+    def __init__(self, title: str, message: str, yes: str, yes_key: str = "enter"):
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self.yes = yes
+        self.yes_key = yes_key
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text(self.title_text, style="bold"))
+            yield Static(Text(self.message), id="confirm-message")  # Text: paths may contain [ ]
+            hint = Text.assemble((self.yes_key, "bold"), f" {self.yes}   ", ("esc", "bold"), " cancel")
+            yield Static(hint)
+
+    def action_enter(self) -> None:
+        self.dismiss(self.yes_key == "enter")
+
+    def action_y(self) -> None:
+        if self.yes_key == "y":
+            self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
 class ScopePicker(ModalScreen[Scope | None]):
     BINDINGS = [Binding("escape", "cancel", "cancel")]
     DEFAULT_CSS = """

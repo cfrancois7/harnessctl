@@ -217,6 +217,18 @@ class Engine:
             ),
         )
 
+    def find_installed(self, item: InstalledItem) -> InstalledItem | None:
+        """The same item in a fresh scan, matched on scope, kind, original location and state."""
+        key = (item.scope, item.kind, item.origin_location, item.enabled)
+        return next(
+            (
+                i
+                for i in self.installed(item.harness)
+                if (i.scope, i.kind, i.origin_location, i.enabled) == key
+            ),
+            None,
+        )
+
     def catalog(self, harness: str) -> list[CatalogEntry]:
         adapter = self.adapter(harness)
         locks = self._locks()

@@ -24,7 +24,7 @@ from harnessctl.engine import CatalogEntry, Engine
 from harnessctl.model import InstalledItem, Scope
 from harnessctl.planner import Plan, PlanConflict, PlanError
 from harnessctl.sources.cache import SourceState
-from harnessctl.tui.modals import PlanModal, ScopePicker
+from harnessctl.tui.modals import ConfirmScreen, PlanModal, ScopePicker
 from harnessctl.tui.text import short_path, sync_summary
 from harnessctl.tui.views import CatalogView, InstalledView, ItemList, ListDetailView, SourcesView
 
@@ -237,7 +237,7 @@ class HarnessApp(App[None]):
             message, title=title, severity="error" if error else "information", timeout=12 if error else 6
         )
 
-    def propose(self, build: Callable[[], Plan]) -> None:
+    def propose(self, build: Callable[[], Plan], replan: Callable[[], Plan] | None = None) -> None:
         # `build` only assembles the plan's steps in memory (no git or harness CLI runs), so it
         # is safe to call straight from the UI thread; only apply_plan() below is a worker.
         try:
@@ -252,19 +252,22 @@ class HarnessApp(App[None]):
         # Plan-time "left in place" warnings (e.g. a tampered lock entry) travel on the plan
         # itself (see Plan.warnings) and are rendered inside PlanModal — not read off shared
         # engine.lock_errors, which a concurrent rescan thread can reset or consume first.
+        again = replan or build
         label = self.engine.adapter(plan.harness).label
-        self.push_screen(PlanModal(plan, self.engine.paths.home, label), self._confirmed)
+        self.push_screen(
+            PlanModal(plan, self.engine.paths.home, label), lambda chosen: self._confirmed(chosen, again)
+        )
 
-    def _confirmed(self, plan: Plan | None) -> None:
+    def _confirmed(self, plan: Plan | None, replan: Callable[[], Plan]) -> None:
         if plan is not None:
-            self.apply_plan(plan)
+            self.apply_plan(plan, replan)
 
     @work(thread=True, group="apply")
-    def apply_plan(self, plan: Plan) -> None:
+    def apply_plan(self, plan: Plan, replan: Callable[[], Plan] | None = None) -> None:
         try:
             result = self.engine.apply(plan)
         except PlanConflict as exc:
-            self.call_from_thread(self._report, f"{exc}\nNothing was changed.", plan.title, True)
+            self.call_from_thread(self._conflict, plan, f"{exc}\nNothing was changed.", replan)
         except Exception as exc:  # noqa: BLE001 - e.g. the backup folder cannot be written
             log.exception("%s: apply failed", plan.title)
             self.call_from_thread(self._report, f"{type(exc).__name__}: {exc}", plan.title, True)
@@ -279,6 +282,18 @@ class HarnessApp(App[None]):
                 )
                 self.call_from_thread(self._report, message, plan.title, True)
         self.call_from_thread(self.rescan)
+
+    def _conflict(self, plan: Plan, message: str, replan: Callable[[], Plan] | None) -> None:
+        if replan is None:
+            self._report(message, plan.title, error=True)
+            return
+        self.last_outcome = message  # shown once, in the modal below: no toast repeating it
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self.propose(replan)
+
+        self.push_screen(ConfirmScreen(plan.title, message, "re-plan"), answered)
 
     def install(self, entry: CatalogEntry) -> None:
         adapter = self.engine.adapter(self.harness)
