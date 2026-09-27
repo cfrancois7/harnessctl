@@ -4,6 +4,7 @@ import pytest
 
 from harnessctl.adapters.claude_code import ClaudeCodeAdapter
 from harnessctl.model import Kind, Scope, Status
+from harnessctl.planner import PlanError
 from tests.helpers import skill, write
 
 
@@ -176,6 +177,34 @@ def test_plugin_files_of_the_wrong_shape_do_not_crash_the_scan(env, installed, s
     items = ClaudeCodeAdapter(home, env.paths.parking, which=lambda n: None).scan(Scope.USER, None)
     plugins = [i for i in items if i.kind is Kind.PLUGIN]
     assert all(p.status is Status.BROKEN or p.name == "a" for p in plugins)
+
+
+def test_local_scope_plugins_are_listed_read_only(claude, env):
+    path = env.home / ".claude" / "plugins" / "installed_plugins.json"
+    data = json.loads(path.read_text())
+    data["plugins"]["scratch@gfargo-skills"] = [
+        {"scope": "local", "projectPath": str(env.project), "installPath": str(env.home / "nope")},
+        {"scope": "local", "projectPath": "/somewhere/else", "installPath": "/x"},
+    ]
+    path.write_text(json.dumps(data))
+    write(
+        env.project / ".claude" / "settings.local.json",
+        json.dumps({"enabledPlugins": {"scratch@gfargo-skills": True}}),
+    )
+    local = _by_name(claude.scan(Scope.LOCAL, env.project))
+    assert set(local) == {"scratch"}
+    scratch = local["scratch"]
+    assert scratch.location == "claude-plugin:scratch@gfargo-skills"
+    assert scratch.enabled is True and scratch.scope is Scope.LOCAL
+    assert scratch.readonly == "local scope is read-only"
+    with pytest.raises(PlanError, match="local scope is read-only"):
+        claude.plan_toggle(scratch, env.project)
+
+
+def test_broken_plugin_files_are_not_reported_a_third_time_for_local_scope(env):
+    write(env.home / ".claude" / "plugins" / "installed_plugins.json", "[]")
+    adapter = ClaudeCodeAdapter(env.home, env.paths.parking)
+    assert [i for i in adapter.scan(Scope.LOCAL, env.project) if i.status is Status.BROKEN] == []
 
 
 def test_installed_plugins_that_is_not_an_object_is_a_broken_item(env):
