@@ -91,6 +91,7 @@ class HarnessApp(App[None]):
         self._signature: tuple | None = None
         self._sources_sig: tuple | None = None
         self._shown_lock_errors: set[str] = set()
+        self._shown_config_errors: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -149,8 +150,7 @@ class HarnessApp(App[None]):
         self.call_from_thread(self._after_sync)
 
     def _after_sync(self) -> None:
-        for problem in self.engine.config_errors:
-            self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self._notify_config_errors(self.engine.config_errors)
         self.rescan()
 
     @work(thread=True, group="sources")
@@ -162,9 +162,17 @@ class HarnessApp(App[None]):
         self.call_from_thread(self._sources_reloaded, errors)
 
     def _sources_reloaded(self, errors: list[str]) -> None:
-        for problem in errors:
-            self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self._notify_config_errors(errors)
         self.rescan()
+
+    def _notify_config_errors(self, errors: list[str]) -> None:
+        # Only surface a configuration problem the first time it appears; once it clears (the
+        # file is fixed) forget it, so it is announced again if it comes back.
+        unique_errors = list(dict.fromkeys(errors))
+        for problem in unique_errors:
+            if problem not in self._shown_config_errors:
+                self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self._shown_config_errors = set(unique_errors)
 
     @work(thread=True, exclusive=True, group="scan")
     def rescan(self) -> None:
@@ -264,8 +272,10 @@ class HarnessApp(App[None]):
         )
 
     def propose(self, build: Callable[[], Plan], replan: Callable[[], Plan] | None = None) -> None:
-        # `build` only assembles the plan's steps in memory (no git or harness CLI runs), so it
-        # is safe to call straight from the UI thread; only apply_plan() below is a worker.
+        # `build` only assembles the plan's steps in memory, and `replan` (when given) only
+        # re-scans the filesystem to find the item fresh (see e.g. ItemList._propose) — neither
+        # runs git or a harness CLI, so both are safe to call straight from the UI thread; only
+        # apply_plan() below is a worker.
         try:
             plan = build()
         except (PlanError, ConfigError) as exc:

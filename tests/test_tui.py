@@ -249,6 +249,35 @@ async def test_a_broken_config_toml_is_reported_and_the_app_keeps_going(tui):
         assert "api-conventions" in _names(app, CatalogView)  # corporate sources still there
 
 
+async def test_a_repeated_config_error_is_only_notified_once(tui):
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+
+    def config_errors(msgs: list[str]) -> list[str]:
+        return [m for m in msgs if "config.toml" in m]
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 1
+
+        write(tui.env.paths.config_toml, "[[source]\n")  # rewritten, same problem
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 1  # not shown again
+
+        write(tui.env.paths.config_toml, "")  # fixed
+        app.poll_changes()
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")  # broken again
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 2  # shown again now that it recurred
+
+
 async def test_cursor_stays_on_the_item_after_disabling_it(tui):
     app = tui.app()
     async with app.run_test(size=(120, 30)) as pilot:

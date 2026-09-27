@@ -384,15 +384,29 @@ def test_a_reload_racing_a_slow_add_never_duplicates_or_refetches(engine, env, t
     monkeypatch.setattr(engine_module, "sync_source", slow_sync_source)
 
     fetched: list[str] = []
-    adder = threading.Thread(target=engine.add_source, args=(other.as_uri(),), kwargs={"name": "pub"})
+    errors: list[BaseException] = []
+
+    def guarded(fn) -> None:
+        # A Thread swallows an exception raised in its target (just prints it): capture it
+        # instead, so a crash in either thread fails this test rather than passing vacuously.
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised via `errors` below
+            errors.append(exc)
+
+    adder = threading.Thread(target=guarded, args=(lambda: engine.add_source(other.as_uri(), name="pub"),))
     adder.start()
     assert started.wait(5)
-    reloader = threading.Thread(target=lambda: engine.reload_sources(on_fetch=fetched.append))
+    reloader = threading.Thread(
+        target=guarded, args=(lambda: engine.reload_sources(on_fetch=fetched.append),)
+    )
     reloader.start()
     release.set()
     adder.join(5)
     reloader.join(5)
 
+    assert not adder.is_alive() and not reloader.is_alive()
+    assert errors == []
     assert [s.spec.name for s in engine.sources].count("pub") == 1
     assert fetched == []
 
