@@ -11,7 +11,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Markdown, OptionList
+from textual.widgets import Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 
 from harnessctl.engine import CatalogEntry, group_of
@@ -222,12 +222,43 @@ class InstalledView(ListDetailView):
 
 
 class CatalogView(ListDetailView):
-    BINDINGS = [Binding("i", "install", "install")]
-    empty_text = "No catalog items. Add a source in the **Sources** tab (press `3`)."
+    BINDINGS = [
+        Binding("i", "install", "install"),
+        # Hidden from the footer (already six keys wide); listed by `?` and the filter status line.
+        Binding("s", "cycle_source", "filter by source", show=False),
+        Binding("t", "cycle_kind", "filter by type", show=False),
+    ]
+    DEFAULT_CSS = """
+    CatalogView > #filters { display: none; margin: 0 1; color: $text-muted; }
+    CatalogView > #filters.-shown { display: block; }
+    """
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.source_filter: str | None = None
+        self.kind_filter: Kind | None = None
+        self._shown = 0
+
+    @property
+    def empty_text(self) -> str:
+        if self.source_filter or self.kind_filter:
+            return (
+                "No item matches these filters. Press `s` (source) or `t` (type) to change them, "
+                "or `esc` to clear them."
+            )
+        return "No catalog items. Add a source in the **Sources** tab (press `3`)."
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="filters")
+        yield from super().compose()
 
     def groups(self, entries: list[CatalogEntry], text: str) -> Groups:
         by_source: dict[str, list[CatalogEntry]] = {}
         for entry in entries:
+            if self.source_filter is not None and entry.item.source != self.source_filter:
+                continue
+            if self.kind_filter is not None and entry.item.kind is not self.kind_filter:
+                continue
             by_source.setdefault(entry.item.source, []).append(entry)
         groups: Groups = []
         for source, group in by_source.items():
@@ -239,6 +270,7 @@ class CatalogView(ListDetailView):
                 or text in f"{e.item.id} {e.item.kind} {e.item.source} {e.item.description}".lower()
             ]
             groups.append((f"{source} · {trust}", rows))
+        self._shown = sum(len(rows) for _, rows in groups)
         return groups
 
     def key(self, entry: CatalogEntry) -> Hashable:
@@ -246,6 +278,39 @@ class CatalogView(ListDetailView):
 
     def detail(self, entry: CatalogEntry) -> str:
         return catalog_detail(entry)
+
+    @staticmethod
+    def _next(options: list, current: Any) -> Any:
+        """None (no filter) → each option in turn → None."""
+        chain = [None, *options]
+        return chain[(chain.index(current) + 1) % len(chain)] if current in chain else None
+
+    def action_cycle_source(self) -> None:
+        sources = list(dict.fromkeys(e.item.source for e in self.data))
+        self.source_filter = self._next(sources, self.source_filter)
+        self._refresh_rows()
+
+    def action_cycle_kind(self) -> None:
+        self.kind_filter = self._next(list(Kind), self.kind_filter)
+        self._refresh_rows()
+
+    def action_clear_filter(self) -> None:
+        self.source_filter = self.kind_filter = None
+        super().action_clear_filter()
+        self._refresh_rows()  # the text may already have been empty: no Input.Changed follows
+
+    def _refresh_rows(self) -> None:
+        super()._refresh_rows()
+        parts = []
+        if self.source_filter:
+            parts.append(f"source: {self.source_filter}")
+        if self.kind_filter:
+            parts.append(f"type: {self.kind_filter.value}")
+        label = self.query_one("#filters", Static)
+        if parts:
+            parts.append(f"{self._shown}/{len(self.data)}")
+            label.update(" · ".join(parts) + "   (s source · t type · esc clear)")
+        label.set_class(bool(parts), "-shown")
 
     def action_install(self) -> None:
         if self.selected is not None:

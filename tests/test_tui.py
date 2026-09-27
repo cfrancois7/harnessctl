@@ -7,7 +7,7 @@ from textual.widgets import Static, TabbedContent
 
 from harnessctl.tui.modals import DetailScreen
 from harnessctl.tui.views import CatalogView, DetailPane, InstalledView, ItemList
-from tests.helpers import settle, skill, write
+from tests.helpers import make_repo, settle, skill, write
 
 
 def _names(app, view=InstalledView):
@@ -154,3 +154,64 @@ async def test_broken_lock_file_toasts_once(tui):
         app.rescan()
         await settle(pilot)
         assert len(warnings()) == 1  # not re-toasted on a second scan of the same broken file
+
+
+def _public_source(tui, tmp_path):
+    public = tmp_path / "pub"
+    skill(public / "skills" / "tdd")
+    make_repo(None, public)
+    write(tui.env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{public.as_uri()}"\n')
+    tui.env.engine().load_sources(fetch=True)  # clone it into the shared cache
+    return public
+
+
+async def test_catalog_filters_by_source_and_type(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2")
+        view = app.query_one(CatalogView)
+        everything = ["api-conventions", "block-secrets-read", "jira-context", "tdd"]
+        assert _names(app, CatalogView) == everything
+        await pilot.press("s")
+        assert _names(app, CatalogView) == ["api-conventions", "block-secrets-read", "jira-context"]
+        status = str(view.query_one("#filters", Static).render())
+        assert "source: acme" in status and "3/4" in status
+        await pilot.press("s")
+        assert _names(app, CatalogView) == ["tdd"]
+        await pilot.press("s")
+        assert _names(app, CatalogView) == everything
+        assert view.query_one("#filters").display is False
+        await pilot.press("t")
+        assert _names(app, CatalogView) == ["api-conventions", "tdd"]
+        assert "type: skill" in str(view.query_one("#filters", Static).render())
+        await pilot.press("t")
+        assert _names(app, CatalogView) == ["block-secrets-read"]
+        await pilot.press("t", "t")
+        assert _names(app, CatalogView) == everything
+
+
+async def test_escape_clears_the_source_and_type_filters(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "s", "t")
+        assert _names(app, CatalogView) == ["api-conventions"]
+        await pilot.press("escape")
+        view = app.query_one(CatalogView)
+        assert view.source_filter is None and view.kind_filter is None
+        assert _names(app, CatalogView) == ["api-conventions", "block-secrets-read", "jira-context", "tdd"]
+        assert view.query_one("#filters").display is False
+
+
+async def test_filters_that_match_nothing_say_how_to_change_them(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "s", "s", "t", "t")  # source pub, type hook: nothing
+        assert _names(app, CatalogView) == []
+        detail = app.query_one(CatalogView).query_one(DetailPane).markdown
+        assert "No item matches these filters" in detail and "`s`" in detail and "`esc`" in detail
