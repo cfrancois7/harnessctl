@@ -43,7 +43,14 @@ from harnessctl.planner import (
     apply,
     run_command,
 )
-from harnessctl.provenance import LockEntry, add_entry_edit, read_lock, remove_entry_edit, resolve
+from harnessctl.provenance import (
+    LockEntry,
+    add_entry_edit,
+    normalize_url,
+    read_lock,
+    remove_entry_edit,
+    resolve,
+)
 from harnessctl.sources.cache import SourceState, sync_source
 from harnessctl.sources.formats import payload_hash
 
@@ -123,6 +130,10 @@ class Engine:
     def add_source(
         self, url: str, name: str | None = None, ref: str | None = None, subdir: str = ""
     ) -> SourceState:
+        wanted = normalize_url(url)
+        twin = next((s for s in self.specs().values() if normalize_url(s.url) == wanted), None)
+        if twin is not None:
+            raise ConfigError(f"{url} is already configured as source '{twin.name}'")
         spec = SourceSpec(name or default_source_name(url), url, Trust.PUBLIC, ref or None, subdir)
         add_public_source(self.paths, spec)
         state = sync_source(spec, self.paths.sources_cache, fetch=True)

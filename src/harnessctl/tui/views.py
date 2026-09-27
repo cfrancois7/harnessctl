@@ -364,4 +364,4 @@ class SourcesView(ListDetailView):
 
     def action_remove(self) -> None:
         if self.selected is not None:
-            self.app.remove_source(self.selected.spec.name)
+            self.app.confirm_remove_source(self.selected)

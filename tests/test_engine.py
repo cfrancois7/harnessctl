@@ -325,3 +325,23 @@ def test_find_installed_picks_the_exact_parked_copy_among_several(engine, env):
     shutil.rmtree(Path(old1.meta["park_dir"]))  # only old1's copy vanishes
     assert engine.find_installed(old1) is None
     assert engine.find_installed(old2) is not None and engine.find_installed(old2).location == old2.location
+
+
+def test_the_same_repo_under_another_url_form_is_refused(engine, env):
+    write(env.paths.config_toml, '[[source]]\nname = "tools"\nurl = "git@github.com:acme/tools.git"\n')
+    engine.load_sources(fetch=False)
+    with pytest.raises(ConfigError, match="already configured as source 'tools'"):
+        engine.add_source("https://github.com/acme/tools", name="tools2")
+    assert "tools2" not in env.paths.config_toml.read_text()
+
+
+def test_removing_a_source_keeps_its_installed_items_as_unknown(engine, env, tmp_path):
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+    engine.add_source(other.as_uri(), name="pub")
+    assert engine.apply(engine.plan_install(engine.find_item("pub", "tdd"), "claude-code", Scope.USER)).ok
+    engine.remove_source("pub")
+    tdd = _installed(engine, "tdd")
+    assert tdd.provenance.origin == "unknown"
+    assert (env.home / ".claude" / "skills" / "tdd" / "SKILL.md").is_file()

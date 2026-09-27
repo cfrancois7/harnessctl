@@ -21,7 +21,7 @@ from textual.worker import get_current_worker
 
 from harnessctl.config import ConfigError
 from harnessctl.engine import CatalogEntry, Engine
-from harnessctl.model import InstalledItem, Scope
+from harnessctl.model import InstalledItem, Scope, Trust
 from harnessctl.planner import Plan, PlanConflict, PlanError
 from harnessctl.sources.cache import SourceState
 from harnessctl.tui.modals import ConfirmScreen, PlanModal, ScopePicker
@@ -361,11 +361,30 @@ class HarnessApp(App[None]):
         )
         self.call_from_thread(self.rescan)
 
+    def confirm_remove_source(self, state: SourceState) -> None:
+        if state.spec.trust is Trust.CORPORATE:
+            self._report(
+                "corporate sources are managed in corporate.toml", "Cannot remove source", error=True
+            )
+            return
+        name = state.spec.name
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self.remove_source(name)
+
+        message = (
+            f"{state.spec.url}\n\nIts cached checkout is deleted. "
+            "Items you installed from it stay installed and show as unknown."
+        )
+        self.push_screen(ConfirmScreen(f"Remove source {name}?", message, "remove", yes_key="y"), answered)
+
+    @work(thread=True, group="sources")
     def remove_source(self, name: str) -> None:
         try:
             self.engine.remove_source(name)
         except ConfigError as exc:
-            self._report(str(exc), "Cannot remove source", error=True)
+            self.call_from_thread(self._report, str(exc), "Cannot remove source", True)
             return
-        self._report(f"{name} removed.", "Source removed")
-        self.rescan()
+        self.call_from_thread(self._report, f"{name} removed.", "Source removed")
+        self.call_from_thread(self.rescan)
