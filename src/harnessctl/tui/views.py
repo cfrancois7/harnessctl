@@ -197,7 +197,8 @@ class InstalledView(ListDetailView):
         ]
 
     def key(self, item: InstalledItem) -> Hashable:
-        return (item.harness, item.scope, item.location)
+        # A disabled item's location changes (…::parked::…); its original location does not.
+        return (item.harness, item.scope, item.kind, item.origin_location)
 
     def detail(self, item: InstalledItem) -> str:
         return installed_detail(item, self.app.engine.paths.home)

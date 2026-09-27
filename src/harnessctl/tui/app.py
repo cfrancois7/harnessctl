@@ -340,12 +340,20 @@ class HarnessApp(App[None]):
         self.push_screen(ScopePicker(entry.item.id, choices), chosen)
 
     def edit_item(self, item: InstalledItem) -> None:
-        target = Path(
-            item.meta.get("settings")
-            or item.meta.get("config")
-            or item.meta.get("install_path")
-            or item.location
-        )
+        if item.meta.get("park_dir"):
+            target = Path(item.meta["park_dir"]) / "payload"
+            if not target.exists():
+                self._report(
+                    f"{item.name} is disabled; enable it (space) to edit it.", "Cannot do that", error=True
+                )
+                return
+        else:
+            target = Path(
+                item.meta.get("settings")
+                or item.meta.get("config")
+                or item.meta.get("install_path")
+                or item.location
+            )
         if target.is_dir() and (target / "SKILL.md").is_file():
             target = target / "SKILL.md"
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"

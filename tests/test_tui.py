@@ -247,3 +247,15 @@ async def test_a_broken_config_toml_is_reported_and_the_app_keeps_going(tui):
         assert any("config.toml" in m for m in notifications)
         await pilot.press("2")
         assert "api-conventions" in _names(app, CatalogView)  # corporate sources still there
+
+
+async def test_cursor_stays_on_the_item_after_disabling_it(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("down")
+        assert app.query_one(InstalledView).selected.name == "my-notes"
+        await pilot.press("space", "enter")
+        await settle(pilot)
+        selected = app.query_one(InstalledView).selected
+        assert selected.name == "my-notes" and selected.enabled is False

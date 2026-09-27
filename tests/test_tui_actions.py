@@ -303,3 +303,42 @@ async def test_re_plan_when_the_item_is_gone_says_so(tui):
         assert not isinstance(app.screen, PlanModal)
         assert app.last_outcome == "api-conventions is no longer there; nothing to re-plan"
         assert not (tui.env.paths.parking / "claude-code").exists()
+
+
+async def test_open_a_disabled_skill_opens_its_parked_copy(tui, monkeypatch):
+    calls = []
+    monkeypatch.setenv("EDITOR", "myeditor")
+    monkeypatch.setattr(HarnessApp, "suspend", lambda self: contextlib.nullcontext())
+    monkeypatch.setattr("harnessctl.tui.app.run_editor", calls.append)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space", "enter")  # disable api-conventions
+        await settle(pilot)
+        await pilot.press("o")
+        opened = calls[-1][-1]
+        assert opened.endswith("/payload/SKILL.md")
+        assert opened.startswith(str(tui.env.paths.parking))
+
+
+async def test_open_a_disabled_hook_is_refused(tui, monkeypatch):
+    from harnessctl.model import Scope
+
+    engine = tui.env.engine()
+    engine.load_sources(fetch=False)
+    item = engine.find_item("acme", "block-secrets-read")
+    assert engine.apply(engine.plan_install(item, "claude-code", Scope.USER)).ok
+    hook = next(i for i in engine.installed("claude-code") if i.name == "block-secrets-read")
+    assert engine.apply(engine.plan_toggle(hook)).ok
+
+    calls = []
+    monkeypatch.setattr(HarnessApp, "suspend", lambda self: contextlib.nullcontext())
+    monkeypatch.setattr("harnessctl.tui.app.run_editor", calls.append)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("down", "down")  # Skills: api-conventions, my-notes; Hooks: block-secrets-read
+        assert app.query_one(InstalledView).selected.name == "block-secrets-read"
+        await pilot.press("o")
+        assert calls == []
+        assert app.last_outcome == "block-secrets-read is disabled; enable it (space) to edit it."
