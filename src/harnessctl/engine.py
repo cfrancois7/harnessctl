@@ -241,6 +241,14 @@ class Engine:
     def _commit_of(self, source: str) -> str | None:
         return next((s.commit for s in self.sources if s.spec.name == source), None)
 
+    @staticmethod
+    def _origin(source: str, commit: str | None) -> str:
+        return f"{source}@{commit[:7]}" if commit else source
+
+    def _origin_of(self, inst: InstalledItem) -> str:
+        entry: LockEntry | None = inst.meta.get("lock")
+        return self._origin(entry.source, entry.commit) if entry is not None else ""
+
     def _check_lock_writable(self, path: Path) -> None:
         """A lock harnessctl cannot safely read back and rewrite must block planning, not
         just fail partway through apply (after side effects such as `claude plugin ...` ran)."""
@@ -269,7 +277,14 @@ class Engine:
             settings=inst.settings,
         )
         steps = [*inst.steps, EditJson(self.lock_path(scope), add_entry_edit(entry), f"record {item.id}")]
-        return Plan.build(f"Install {item.id} → {scope}", harness, scope, steps, adapter.reload_hint)
+        return Plan.build(
+            f"Install {item.id} → {scope}",
+            harness,
+            scope,
+            steps,
+            adapter.reload_hint,
+            origin=self._origin(item.source, self._commit_of(item.source)),
+        )
 
     def _scope_dir_for(self, harness: str, scope: Scope) -> Path | None:
         """The folder a lock entry's files must live under to be safe to delete. None if the
@@ -317,6 +332,7 @@ class Engine:
             steps,
             adapter.reload_hint,
             warnings=warnings,
+            origin=self._origin_of(inst),
         )
 
     def plan_toggle(self, inst: InstalledItem) -> Plan:
@@ -324,7 +340,12 @@ class Engine:
         steps = adapter.plan_toggle(inst, self.project)
         verb = "Disable" if inst.enabled else "Enable"
         return Plan.build(
-            f"{verb} {inst.name} ({inst.scope})", inst.harness, inst.scope, steps, adapter.reload_hint
+            f"{verb} {inst.name} ({inst.scope})",
+            inst.harness,
+            inst.scope,
+            steps,
+            adapter.reload_hint,
+            origin=self._origin_of(inst),
         )
 
     def plan_update(self, inst: InstalledItem) -> Plan:
@@ -345,6 +366,7 @@ class Engine:
             [*remove.steps, *install.steps],
             install.reload_hint,
             warnings=[*remove.warnings, *install.warnings],
+            origin=install.origin,
         )
 
     def apply(self, plan: Plan) -> ApplyResult:

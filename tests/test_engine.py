@@ -262,3 +262,16 @@ def test_parked_catalog_hook_keeps_its_provenance_and_can_be_removed(engine, env
     assert engine.apply(engine.plan_remove(parked)).ok
     assert not list((env.paths.parking / "claude-code").iterdir())
     assert json.loads(env.paths.user_lock.read_text())["entries"] == []
+
+
+def test_plans_name_their_source_and_commit(engine, env):
+    commit = engine.sources[0].commit
+    item = _item(engine, "api-conventions")
+    plan = engine.plan_install(item, "claude-code", Scope.USER)
+    assert plan.origin == f"acme@{commit[:7]}"
+    assert engine.apply(plan).ok
+    inst = _installed(engine, "api-conventions")
+    assert engine.plan_toggle(inst).origin == f"acme@{commit[:7]}"
+    assert engine.plan_remove(inst).origin == f"acme@{commit[:7]}"
+    skill(env.home / ".claude" / "skills" / "mine")
+    assert engine.plan_toggle(_installed(engine, "mine")).origin == ""

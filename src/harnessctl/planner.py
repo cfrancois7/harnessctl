@@ -149,6 +149,7 @@ class Plan:
     # shared engine state, so they survive a cancel-then-retry and are immune to a concurrent
     # rescan thread resetting/reading that shared state.
     warnings: list[str] = field(default_factory=list)
+    origin: str = ""  # "<source>@<commit7>" for catalog-backed plans (spec §8), else ""
     preimages: dict[Path, str | None] = field(default_factory=dict)
     # Step index -> the file a WriteFile/EditJson step resolved to at build time (itself, unless
     # its path was a symlink to a file). Lets apply() notice a repoint or a link-to-regular-file
@@ -164,8 +165,9 @@ class Plan:
         steps: list[Step],
         reload_hint: str = "",
         warnings: list[str] | None = None,
+        origin: str = "",
     ) -> Plan:
-        plan = cls(title, harness, scope, list(steps), reload_hint, list(warnings or []))
+        plan = cls(title, harness, scope, list(steps), reload_hint, list(warnings or []), origin)
         plan.preimages = {p: fingerprint(p) for s in plan.steps for p in _touched(s)}
         plan.write_targets = {
             i: _resolved_target(s.path)

@@ -87,7 +87,10 @@ class PlanModal(ModalScreen[Plan | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(Text(self.plan.title, style="bold"))
-            yield Static(f"{self.harness_label} · {self.plan.scope} scope", classes="dim")
+            where = f"{self.harness_label} · {self.plan.scope} scope"
+            if self.plan.origin:
+                where += f" · {self.plan.origin}"
+            yield Static(where, classes="dim", id="plan-where")
             if self.plan.warnings:
                 yield Static(
                     Text("\n".join(f"⚠ {w}" for w in self.plan.warnings), style="bold #ff8a65"),

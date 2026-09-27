@@ -195,3 +195,13 @@ async def test_malformed_marketplace_source_does_not_crash_startup(tui, tmp_path
         await settle(pilot)
         assert app.is_running
         assert "api-conventions" in _items(app)
+
+
+async def test_plan_modal_names_source_and_commit(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space")
+        assert isinstance(app.screen, PlanModal)
+        where = str(app.screen.query_one("#plan-where", Static).render())
+        assert where.startswith("Claude Code · project scope · acme@")
