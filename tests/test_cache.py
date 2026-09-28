@@ -91,6 +91,34 @@ def test_a_changed_url_reclones_from_the_new_repo_instead_of_fetching_the_old_on
     assert {i.id for i in second.items} == {"api-conventions", "block-secrets-read"}
 
 
+def test_a_url_changed_to_unreachable_leaves_the_source_unavailable_not_the_old_repo(tmp_path):
+    repo_a = make_repo(EXAMPLES, tmp_path / "remote-a")
+    cache_root = tmp_path / "cache"
+    first = sync_source(_spec(repo_a.as_uri()), cache_root)
+    assert first.status == "ok" and len(first.items) == 3
+    checkout = cache_root / "acme"
+    assert (checkout / ".git").is_dir()
+
+    bad_spec = _spec((tmp_path / "nowhere").as_uri())
+
+    changed = sync_source(bad_spec, cache_root)
+    assert changed.status == "unavailable"
+    assert changed.items == []
+    assert changed.error
+    # the old checkout is kept on disk, untouched, not deleted:
+    assert (checkout / ".git").is_dir()
+    assert (checkout / "catalog.toml").is_file()
+
+    stale_no_fetch = sync_source(bad_spec, cache_root, fetch=False)
+    assert stale_no_fetch.status == "unavailable"
+    assert stale_no_fetch.items == []
+    assert stale_no_fetch.error
+
+    reverted = sync_source(_spec(repo_a.as_uri()), cache_root, fetch=False)
+    assert reverted.status == "ok" and reverted.error is None
+    assert {i.id for i in reverted.items} == {"api-conventions", "block-secrets-read", "jira-context"}
+
+
 def test_marketplace_that_is_a_list_leaves_the_source_unavailable_with_a_warning(tmp_path):
     remote = tmp_path / "remote"
     write(remote / ".claude-plugin" / "marketplace.json", "[]")

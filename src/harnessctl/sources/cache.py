@@ -107,6 +107,15 @@ def sync_source(spec: SourceSpec, cache_root: Path, fetch: bool = True, timeout:
     if not (checkout / ".git").is_dir():
         return SourceState(spec, "unavailable", error=error or "not synced yet")
 
+    origin = _remote_url(checkout, timeout)
+    if origin is None or normalize_url(origin) != normalize_url(spec.url):
+        # The checkout on disk belongs to a different repo than the spec now points at (a
+        # re-clone just failed, or the url changed and we haven't fetched since). Serving its
+        # items under the new spec would be silently wrong, so report unavailable and leave the
+        # old checkout untouched rather than loading anything from it.
+        error = error or f"source url changed; not yet fetched from {spec.url}"
+        return SourceState(spec, "unavailable", error=error)
+
     root = checkout / spec.subdir if spec.subdir else checkout
     state = SourceState(spec, "stale" if error else "ok", root=root, error=error)
     marker = checkout / ".git" / MARKER
