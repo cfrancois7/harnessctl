@@ -66,8 +66,12 @@ def _clone(spec: SourceSpec, checkout: Path, timeout: int) -> None:
 
 
 def _remote_url(checkout: Path, timeout: int) -> str | None:
+    """The origin remote's url exactly as configured at clone time. Deliberately `git config
+    --get` rather than `git remote get-url`: the latter applies `url.<base>.insteadOf`
+    rewriting, so with a corporate mirror configured that way it would never equal `spec.url`
+    even though nothing changed."""
     try:
-        return _git(["remote", "get-url", "origin"], cwd=checkout, timeout=timeout)
+        return _git(["config", "--get", "remote.origin.url"], cwd=checkout, timeout=timeout)
     except GitError:
         return None
 
@@ -108,7 +112,12 @@ def sync_source(spec: SourceSpec, cache_root: Path, fetch: bool = True, timeout:
         return SourceState(spec, "unavailable", error=error or "not synced yet")
 
     origin = _remote_url(checkout, timeout)
-    if origin is None or normalize_url(origin) != normalize_url(spec.url):
+    if origin is None:
+        # The checkout's origin could not be read at all (a broken checkout, not necessarily a
+        # url change). Don't guess which; just say so and leave the checkout untouched.
+        error = error or "cannot read the checkout's origin; refresh to re-clone"
+        return SourceState(spec, "unavailable", error=error)
+    if normalize_url(origin) != normalize_url(spec.url):
         # The checkout on disk belongs to a different repo than the spec now points at (a
         # re-clone just failed, or the url changed and we haven't fetched since). Serving its
         # items under the new spec would be silently wrong, so report unavailable and leave the

@@ -119,6 +119,57 @@ def test_a_url_changed_to_unreachable_leaves_the_source_unavailable_not_the_old_
     assert {i.id for i in reverted.items} == {"api-conventions", "block-secrets-read", "jira-context"}
 
 
+def test_a_configured_insteadof_mirror_is_not_mistaken_for_a_changed_url(tmp_path, monkeypatch):
+    """A corporate `url.<mirror>.insteadOf <canonical>` config makes `git remote get-url` return
+    the mirror path, not what was configured. `_remote_url` must read the raw configured value
+    (`git config --get remote.origin.url`) instead, or every sync of such a source looks like the
+    url changed and the source becomes permanently unavailable."""
+    from harnessctl.sources import cache
+
+    mirror = make_repo(EXAMPLES, tmp_path / "mirror")
+    global_config = tmp_path / "gitconfig-global"
+    global_config.write_text(f'[url "{mirror.as_uri()}"]\n\tinsteadOf = https://example.com/o/r\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    spec = _spec("https://example.com/o/r")
+    cache_root = tmp_path / "cache"
+
+    first = sync_source(spec, cache_root)
+    assert first.status == "ok" and first.error is None
+    assert len(first.items) == 3
+
+    def boom(*args, **kwargs):
+        raise AssertionError("should not re-clone: origin still matches the configured url")
+
+    monkeypatch.setattr(cache, "_clone", boom)
+
+    second = sync_source(spec, cache_root)
+    assert second.status == "ok" and second.error is None
+    assert len(second.items) == 3
+
+    third = sync_source(spec, cache_root, fetch=False)
+    assert third.status == "ok" and third.error is None
+    assert len(third.items) == 3
+
+
+def test_url_forms_that_normalize_equal_do_not_trigger_a_reclone(tmp_path, monkeypatch):
+    from harnessctl.sources import cache
+
+    repo = make_repo(EXAMPLES, tmp_path / "remote")
+    cache_root = tmp_path / "cache"
+    first = sync_source(_spec(str(repo)), cache_root)
+    assert first.status == "ok" and len(first.items) == 3
+
+    def boom(*args, **kwargs):
+        raise AssertionError("should not re-clone: the url only differs in form")
+
+    monkeypatch.setattr(cache, "_clone", boom)
+    second = sync_source(_spec(repo.as_uri()), cache_root)
+    assert second.status == "ok" and second.error is None
+    assert len(second.items) == 3
+
+
 def test_marketplace_that_is_a_list_leaves_the_source_unavailable_with_a_warning(tmp_path):
     remote = tmp_path / "remote"
     write(remote / ".claude-plugin" / "marketplace.json", "[]")
