@@ -32,8 +32,10 @@ harnessctl --project DIR  # or for another one
 
 Below 100 columns the detail pane is hidden: `enter` opens it full-screen, `esc` goes back.
 
-`o` on a disabled skill opens its parked copy for editing; other disabled items must be enabled
-(`space`) first.
+`o` on a disabled skill or a file-based opencode plugin opens its parked copy for editing; a
+disabled hook or an npm-based opencode plugin must be enabled (`space`) first (parking them only
+records the config edit, not a copy of the file). A disabled Claude plugin is never parked, so `o`
+just opens its install path.
 
 Editing `corporate.toml` or `config.toml` while harnessctl runs reloads the sources within a
 couple of seconds. Claude plugins show as unavailable (`✗`) in the Catalog when the `claude` CLI
