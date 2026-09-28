@@ -16,7 +16,7 @@ from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Resize
-from textual.widgets import Footer, Static, TabbedContent, TabPane
+from textual.widgets import Footer, Static, TabbedContent, TabPane, Tabs
 from textual.worker import get_current_worker
 
 from harnessctl.config import ConfigError
@@ -134,8 +134,10 @@ class HarnessApp(App[None]):
         # already superseded (e.g. two presses in quick succession). Focusing that stale
         # pane's list would post a TabPane.Focused, which TabbedContent uses to set
         # `active` back to it — silently reverting the newer switch. Only act on the event
-        # that matches the tab currently active.
-        if event.pane.id == event.tabbed_content.active:
+        # that matches the tab currently active. When the switch came from the tab bar itself
+        # (arrow keys or a click there), focus stays on the bar so the next arrow moves on to
+        # the next tab.
+        if event.pane.id == event.tabbed_content.active and not isinstance(self.focused, Tabs):
             event.pane.query_one(ItemList).focus()
 
     # --- data --------------------------------------------------------------------------------

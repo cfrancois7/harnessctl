@@ -3,7 +3,7 @@ import copy
 import threading
 
 import pytest
-from textual.widgets import Static, TabbedContent
+from textual.widgets import Static, TabbedContent, Tabs
 
 from harnessctl.tui.modals import DetailScreen
 from harnessctl.tui.views import CatalogView, DetailPane, InstalledView, ItemList
@@ -72,6 +72,19 @@ async def test_number_keys_switch_tabs(tui):
         assert _names(app, CatalogView) == ["api-conventions", "block-secrets-read", "jira-context"]
         await pilot.press("3")
         assert app.query_one(TabbedContent).active == "sources"
+        assert isinstance(app.focused, ItemList)  # number keys land in the new tab's list
+
+
+async def test_arrow_keys_on_the_tab_bar_keep_focus_there(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        app.query_one(Tabs).focus()
+        await pilot.press("right", "right")
+        assert app.query_one(TabbedContent).active == "sources"
+        assert isinstance(app.focused, Tabs)
+        await pilot.press("left")
+        assert app.query_one(TabbedContent).active == "catalog"
 
 
 async def test_harness_switch(tui):
