@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +45,14 @@ from harnessctl.planner import (
     apply,
     run_command,
 )
-from harnessctl.provenance import LockEntry, add_entry_edit, read_lock, remove_entry_edit, resolve
+from harnessctl.provenance import (
+    LockEntry,
+    add_entry_edit,
+    normalize_url,
+    read_lock,
+    remove_entry_edit,
+    resolve,
+)
 from harnessctl.sources.cache import SourceState, sync_source
 from harnessctl.sources.formats import payload_hash
 
@@ -55,8 +64,9 @@ KIND_ORDER = {Kind.SKILL: 0, Kind.HOOK: 1, Kind.PLUGIN: 2}
 class CatalogEntry:
     item: CatalogItem
     trust: Trust
-    available: bool  # the item has a variant for the harness being viewed
+    available: bool  # the item can be installed for the harness being viewed
     installed: list[Scope]
+    reason: str | None = None  # why it cannot be installed, when it cannot
 
 
 def group_of(item: InstalledItem) -> Kind:
@@ -84,6 +94,11 @@ class Engine:
         self.sources: list[SourceState] = []
         self.config_errors: list[str] = []
         self.lock_errors: list[str] = []
+        # Source mutations (load/reload/add/refresh/remove) run in worker threads and each
+        # replaces or scans `self.sources`; without serializing them a slow fetch in one can
+        # overlap with another and duplicate, resurrect or misplace a source (see Task 9 review).
+        # The UI thread never calls these methods, so holding this for a whole fetch is safe.
+        self._sources_lock = threading.RLock()
 
     # --- harnesses and scopes ----------------------------------------------------------------
 
@@ -111,30 +126,59 @@ class Engine:
         return {s.name: s for s in load_sources(self.paths)[0]}
 
     def load_sources(self, fetch: bool) -> None:
-        specs, self.config_errors = load_sources(self.paths)
-        self.sources = [sync_source(s, self.paths.sources_cache, fetch=fetch) for s in specs]
+        with self._sources_lock:
+            specs, self.config_errors = load_sources(self.paths)
+            self.sources = [sync_source(s, self.paths.sources_cache, fetch=fetch) for s in specs]
+
+    def reload_sources(self, on_fetch: Callable[[str], None] | None = None) -> list[str]:
+        """Re-read corporate.toml and config.toml. Unchanged sources keep their state; new or
+        changed ones are fetched (git: call from a worker), each announced through `on_fetch`
+        first; removed ones are dropped."""
+        with self._sources_lock:
+            specs, self.config_errors = load_sources(self.paths)
+            known = {s.spec: s for s in self.sources}
+            states: list[SourceState] = []
+            for spec in specs:
+                state = known.get(spec)
+                if state is None:
+                    if on_fetch is not None:
+                        on_fetch(spec.name)
+                    state = sync_source(spec, self.paths.sources_cache, fetch=True)
+                states.append(state)
+            self.sources = states
+            return self.config_errors
 
     def refresh_source(self, name: str) -> SourceState:
-        index = next(n for n, s in enumerate(self.sources) if s.spec.name == name)
-        self.sources[index] = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
-        return self.sources[index]
+        with self._sources_lock:
+            index = next((n for n, s in enumerate(self.sources) if s.spec.name == name), None)
+            if index is None:
+                raise ConfigError(f"source '{name}' is no longer configured")
+            state = sync_source(self.sources[index].spec, self.paths.sources_cache, fetch=True)
+            self.sources = [state if i == index else s for i, s in enumerate(self.sources)]
+            return state
 
     def add_source(
         self, url: str, name: str | None = None, ref: str | None = None, subdir: str = ""
     ) -> SourceState:
-        spec = SourceSpec(name or default_source_name(url), url, Trust.PUBLIC, ref or None, subdir)
-        add_public_source(self.paths, spec)
-        state = sync_source(spec, self.paths.sources_cache, fetch=True)
-        self.sources.append(state)
-        return state
+        with self._sources_lock:
+            wanted = normalize_url(url)
+            twin = next((s for s in self.specs().values() if normalize_url(s.url) == wanted), None)
+            if twin is not None:
+                raise ConfigError(f"{url} is already configured as source '{twin.name}'")
+            spec = SourceSpec(name or default_source_name(url), url, Trust.PUBLIC, ref or None, subdir)
+            add_public_source(self.paths, spec)
+            state = sync_source(spec, self.paths.sources_cache, fetch=True)
+            self.sources = [*self.sources, state]
+            return state
 
     def remove_source(self, name: str) -> None:
-        spec = self.specs().get(name)
-        if spec is not None and spec.trust is Trust.CORPORATE:
-            raise ConfigError("corporate sources are managed in corporate.toml")
-        remove_public_source(self.paths, name)
-        self.sources = [s for s in self.sources if s.spec.name != name]
-        shutil.rmtree(self.paths.sources_cache / name, ignore_errors=True)
+        with self._sources_lock:
+            spec = self.specs().get(name)
+            if spec is not None and spec.trust is Trust.CORPORATE:
+                raise ConfigError("corporate sources are managed in corporate.toml")
+            remove_public_source(self.paths, name)
+            self.sources = [s for s in self.sources if s.spec.name != name]
+            shutil.rmtree(self.paths.sources_cache / name, ignore_errors=True)
 
     def find_item(self, source: str, item_id: str) -> CatalogItem | None:
         for state in self.sources:
@@ -216,7 +260,20 @@ class Engine:
             ),
         )
 
+    def find_installed(self, item: InstalledItem) -> InstalledItem | None:
+        """The same item in a fresh scan, matched on scope, kind and location. `location` (not
+        `origin_location`) is used because several parked copies of one skill can share an
+        origin location (park_dir suffixes `-2`, `-3`, ...); `location` includes the park folder
+        for a parked item (`<original>::parked::<folder>`) and equals `origin_location` for an
+        enabled one, so it identifies one exact copy."""
+        key = (item.scope, item.kind, item.location)
+        return next(
+            (i for i in self.installed(item.harness) if (i.scope, i.kind, i.location) == key),
+            None,
+        )
+
     def catalog(self, harness: str) -> list[CatalogEntry]:
+        adapter = self.adapter(harness)
         locks = self._locks()
         native = {
             i.location: i.scope for i in self.installed(harness) if i.location.startswith("claude-plugin:")
@@ -233,13 +290,24 @@ class Engine:
                 if isinstance(variant, ClaudePluginVariant) and not scopes:
                     found = native.get(f"claude-plugin:{variant.plugin_id}")
                     scopes = [found] if found else []
-                entries.append(CatalogEntry(item, state.spec.trust, variant is not None, scopes))
+                reason = (
+                    f"no {adapter.label} variant" if variant is None else adapter.unavailable_reason(variant)
+                )
+                entries.append(CatalogEntry(item, state.spec.trust, reason is None, scopes, reason))
         return entries
 
     # --- planning ----------------------------------------------------------------------------
 
     def _commit_of(self, source: str) -> str | None:
         return next((s.commit for s in self.sources if s.spec.name == source), None)
+
+    @staticmethod
+    def _origin(source: str, commit: str | None) -> str:
+        return f"{source}@{commit[:7]}" if commit else source
+
+    def _origin_of(self, inst: InstalledItem) -> str:
+        entry: LockEntry | None = inst.meta.get("lock")
+        return self._origin(entry.source, entry.commit) if entry is not None else ""
 
     def _check_lock_writable(self, path: Path) -> None:
         """A lock harnessctl cannot safely read back and rewrite must block planning, not
@@ -269,7 +337,14 @@ class Engine:
             settings=inst.settings,
         )
         steps = [*inst.steps, EditJson(self.lock_path(scope), add_entry_edit(entry), f"record {item.id}")]
-        return Plan.build(f"Install {item.id} → {scope}", harness, scope, steps, adapter.reload_hint)
+        return Plan.build(
+            f"Install {item.id} → {scope}",
+            harness,
+            scope,
+            steps,
+            adapter.reload_hint,
+            origin=self._origin(item.source, self._commit_of(item.source)),
+        )
 
     def _scope_dir_for(self, harness: str, scope: Scope) -> Path | None:
         """The folder a lock entry's files must live under to be safe to delete. None if the
@@ -317,6 +392,7 @@ class Engine:
             steps,
             adapter.reload_hint,
             warnings=warnings,
+            origin=self._origin_of(inst),
         )
 
     def plan_toggle(self, inst: InstalledItem) -> Plan:
@@ -324,7 +400,12 @@ class Engine:
         steps = adapter.plan_toggle(inst, self.project)
         verb = "Disable" if inst.enabled else "Enable"
         return Plan.build(
-            f"{verb} {inst.name} ({inst.scope})", inst.harness, inst.scope, steps, adapter.reload_hint
+            f"{verb} {inst.name} ({inst.scope})",
+            inst.harness,
+            inst.scope,
+            steps,
+            adapter.reload_hint,
+            origin=self._origin_of(inst),
         )
 
     def plan_update(self, inst: InstalledItem) -> Plan:
@@ -345,6 +426,7 @@ class Engine:
             [*remove.steps, *install.steps],
             install.reload_hint,
             warnings=[*remove.warnings, *install.warnings],
+            origin=install.origin,
         )
 
     def apply(self, plan: Plan) -> ApplyResult:

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from harnessctl.model import CatalogItem, SourceFormat, SourceSpec
+from harnessctl.provenance import normalize_url
 from harnessctl.sources.formats import detect_format, load_items
 
 log = logging.getLogger(__name__)
@@ -52,26 +53,49 @@ def _git(args: list[str], cwd: Path | None = None, timeout: int = 60) -> str:
     return result.stdout.strip()
 
 
+def _clone(spec: SourceSpec, checkout: Path, timeout: int) -> None:
+    """Clone into a sibling tmp dir, then swap it in: a failed clone leaves any existing
+    checkout untouched."""
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    tmp = checkout.with_name(checkout.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    branch = ["--branch", spec.ref] if spec.ref else []
+    _git(["clone", "--depth", "1", "--quiet", *branch, spec.url, str(tmp)], timeout=timeout)
+    shutil.rmtree(checkout, ignore_errors=True)
+    tmp.rename(checkout)
+
+
+def _remote_url(checkout: Path, timeout: int) -> str | None:
+    """The origin remote's url exactly as configured at clone time. Deliberately `git config
+    --get` rather than `git remote get-url`: the latter applies `url.<base>.insteadOf`
+    rewriting, so with a corporate mirror configured that way it would never equal `spec.url`
+    even though nothing changed."""
+    try:
+        return _git(["config", "--get", "remote.origin.url"], cwd=checkout, timeout=timeout)
+    except GitError:
+        return None
+
+
 def _fetch(spec: SourceSpec, checkout: Path, timeout: int) -> None:
     if (checkout / ".git").is_dir():
-        _git(
-            ["fetch", "--depth", "1", "--quiet", "origin", spec.ref or "HEAD"],
-            cwd=checkout,
-            timeout=timeout,
-        )
-        _git(
-            ["reset", "--hard", "--quiet", "FETCH_HEAD"],
-            cwd=checkout,
-            timeout=timeout,
-        )
+        current = _remote_url(checkout, timeout)
+        if current is None or normalize_url(current) != normalize_url(spec.url):
+            # The source's url changed since the last sync: `origin` still points at the old
+            # repo, so fetching it would silently keep serving stale content. Re-clone instead.
+            _clone(spec, checkout, timeout)
+        else:
+            _git(
+                ["fetch", "--depth", "1", "--quiet", "origin", spec.ref or "HEAD"],
+                cwd=checkout,
+                timeout=timeout,
+            )
+            _git(
+                ["reset", "--hard", "--quiet", "FETCH_HEAD"],
+                cwd=checkout,
+                timeout=timeout,
+            )
     else:
-        checkout.parent.mkdir(parents=True, exist_ok=True)
-        tmp = checkout.with_name(checkout.name + ".tmp")
-        shutil.rmtree(tmp, ignore_errors=True)
-        branch = ["--branch", spec.ref] if spec.ref else []
-        _git(["clone", "--depth", "1", "--quiet", *branch, spec.url, str(tmp)], timeout=timeout)
-        shutil.rmtree(checkout, ignore_errors=True)
-        tmp.rename(checkout)
+        _clone(spec, checkout, timeout)
     (checkout / ".git" / MARKER).touch()
 
 
@@ -86,6 +110,20 @@ def sync_source(spec: SourceSpec, cache_root: Path, fetch: bool = True, timeout:
             error = str(exc)
     if not (checkout / ".git").is_dir():
         return SourceState(spec, "unavailable", error=error or "not synced yet")
+
+    origin = _remote_url(checkout, timeout)
+    if origin is None:
+        # The checkout's origin could not be read at all (a broken checkout, not necessarily a
+        # url change). Don't guess which; just say so and leave the checkout untouched.
+        error = error or "cannot read the checkout's origin; refresh to re-clone"
+        return SourceState(spec, "unavailable", error=error)
+    if normalize_url(origin) != normalize_url(spec.url):
+        # The checkout on disk belongs to a different repo than the spec now points at (a
+        # re-clone just failed, or the url changed and we haven't fetched since). Serving its
+        # items under the new spec would be silently wrong, so report unavailable and leave the
+        # old checkout untouched rather than loading anything from it.
+        error = error or f"source url changed; not yet fetched from {spec.url}"
+        return SourceState(spec, "unavailable", error=error)
 
     root = checkout / spec.subdir if spec.subdir else checkout
     state = SourceState(spec, "stale" if error else "ok", root=root, error=error)

@@ -149,6 +149,7 @@ class Plan:
     # shared engine state, so they survive a cancel-then-retry and are immune to a concurrent
     # rescan thread resetting/reading that shared state.
     warnings: list[str] = field(default_factory=list)
+    origin: str = ""  # "<source>@<commit7>" for catalog-backed plans (spec §8), else ""
     preimages: dict[Path, str | None] = field(default_factory=dict)
     # Step index -> the file a WriteFile/EditJson step resolved to at build time (itself, unless
     # its path was a symlink to a file). Lets apply() notice a repoint or a link-to-regular-file
@@ -164,8 +165,9 @@ class Plan:
         steps: list[Step],
         reload_hint: str = "",
         warnings: list[str] | None = None,
+        origin: str = "",
     ) -> Plan:
-        plan = cls(title, harness, scope, list(steps), reload_hint, list(warnings or []))
+        plan = cls(title, harness, scope, list(steps), reload_hint, list(warnings or []), origin)
         plan.preimages = {p: fingerprint(p) for s in plan.steps for p in _touched(s)}
         plan.write_targets = {
             i: _resolved_target(s.path)
@@ -280,14 +282,18 @@ def apply(plan: Plan, backup_root: Path, runner: Runner = run_command, keep: int
         raise PlanConflict(f"{changed[0].name} changed since the plan was made ({changed[0]}) — re-plan?")
 
     backup = backup_root / datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    backup.mkdir(parents=True, mode=0o700)
     saved: dict[Path, Path | None] = {}
-    for n, path in enumerate(plan.preimages):
-        if path.exists() or path.is_symlink():
-            _copy(path, backup / str(n))
-            saved[path] = backup / str(n)
-        else:
-            saved[path] = None
+    try:
+        backup.mkdir(parents=True, mode=0o700)
+        for n, path in enumerate(plan.preimages):
+            if path.exists() or path.is_symlink():
+                _copy(path, backup / str(n))
+                saved[path] = backup / str(n)
+            else:
+                saved[path] = None
+    except OSError as exc:
+        shutil.rmtree(backup, ignore_errors=True)
+        return ApplyResult(False, error=f"cannot back up before applying: {exc}; nothing was changed")
 
     output: list[str] = []
     for n, step in enumerate(plan.steps):
@@ -316,23 +322,35 @@ def apply(plan: Plan, backup_root: Path, runner: Runner = run_command, keep: int
 
 
 def plan_diff(plan: Plan) -> str:
-    """Unified diff of every file the plan writes or edits, against what is on disk now."""
-    chunks: list[str] = []
+    """Unified diff per file, from what is on disk now to what the whole plan leaves there.
+    Steps touching the same file (an update's remove, then its install) are applied in order."""
+    before: dict[Path, str] = {}
+    after: dict[Path, str] = {}
+
+    def current(path: Path) -> str:
+        if path not in after:
+            before[path] = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            after[path] = before[path]
+        return after[path]
+
     for step in plan.steps:
-        if isinstance(step, WriteFile):
-            old = step.path.read_text(errors="replace") if step.path.is_file() else ""
-            new = step.content.decode(errors="replace")
-        elif isinstance(step, EditJson):
-            old = step.path.read_text(encoding="utf-8", errors="replace") if step.path.is_file() else ""
-            try:
-                new = dumps(step.edit(copy.deepcopy(loads_jsonc(old) if old.strip() else None)))
-            except Exception as exc:  # noqa: BLE001 - a preview must never crash the UI
-                new = f"<cannot preview: {exc}>\n"
-        else:
-            continue
+        match step:
+            case WriteFile(path=p, content=c):
+                current(p)
+                after[p] = c.decode(errors="replace")
+            case EditJson(path=p, edit=edit):
+                old = current(p)
+                try:
+                    after[p] = dumps(edit(copy.deepcopy(loads_jsonc(old) if old.strip() else None)))
+                except Exception as exc:  # noqa: BLE001 - a preview must never crash the UI
+                    after[p] = f"<cannot preview: {exc}>\n"
+            case DeletePath(path=p) if p in after:
+                after[p] = ""
+    chunks: list[str] = []
+    for path, new in after.items():
         chunks.extend(
             difflib.unified_diff(
-                old.splitlines(keepends=True), new.splitlines(keepends=True), f"a{step.path}", f"b{step.path}"
+                before[path].splitlines(keepends=True), new.splitlines(keepends=True), f"a{path}", f"b{path}"
             )
         )
     return "".join(chunks) or "(no file contents change)\n"

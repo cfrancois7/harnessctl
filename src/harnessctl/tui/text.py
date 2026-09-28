@@ -77,9 +77,15 @@ def installed_row(item: InstalledItem) -> Text:
 def catalog_row(entry: CatalogEntry) -> Text:
     dim = "" if entry.available else "dim"
     support = " ".join(HARNESS_SHORT[h] if h in entry.item.variants else "–" for h in HARNESSES)
+    if entry.installed:
+        mark = ("✓", "green")
+    elif not entry.available:
+        mark = ("✗", "dim")
+    else:
+        mark = (" ", "")
     return Text.assemble(
         " ",
-        ("✓" if entry.installed else " ", "green"),
+        mark,
         " ",
         (_cell(entry.item.id, 24), dim),
         " ",
@@ -157,8 +163,8 @@ def catalog_detail(entry: CatalogEntry) -> str:
         "**Harness variants**\n\n" + variants,
         f"**Installed** {installed}",
     ]
-    if not entry.available:
-        parts.append("*No variant for this harness.*")
+    if entry.reason:
+        parts.append(f"*Not available: {entry.reason}.*")
     if item.readme:
         parts += ["---", item.readme]
     return "\n\n".join(p for p in parts if p)

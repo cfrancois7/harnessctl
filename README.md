@@ -26,11 +26,20 @@ harnessctl --project DIR  # or for another one
 |---|---|
 | everywhere | `1` `2` `3` tabs · `h` switch harness · `r` rescan · `/` filter · `?` help · `q` quit |
 | Installed | `space` enable/disable · `u` update · `d` remove · `o` open in `$EDITOR` |
-| Catalog | `i` install (then pick user or project scope) |
-| Sources | `a` add · `r` refresh (replaces rescan here) · `d` remove |
-| plan | `enter` apply · `v` view diff · `esc` cancel |
+| Catalog | `i` install (then pick user or project scope) · `s` filter by source · `t` filter by type · `esc` clear filters. `✗` marks an item that cannot be installed here; the detail says why. |
+| Sources | `a` add · `r` refresh (replaces rescan here) · `d` remove (asks first; `y` confirms) |
+| plan | `enter` apply · `v` view diff · `esc` cancel. If a file changed since the plan was made, nothing is changed and you are offered to re-plan. |
 
 Below 100 columns the detail pane is hidden: `enter` opens it full-screen, `esc` goes back.
+
+`o` on a disabled skill or a file-based opencode plugin opens its parked copy for editing; a
+disabled hook or an npm-based opencode plugin must be enabled (`space`) first (parking them only
+records the config edit, not a copy of the file). A disabled Claude plugin is never parked, so `o`
+just opens its install path.
+
+Editing `corporate.toml` or `config.toml` while harnessctl runs reloads the sources within a
+couple of seconds. Claude plugins show as unavailable (`✗`) in the Catalog when the `claude` CLI
+is not on `PATH`. Press `?` for every key, including those not shown in the footer.
 
 ## Configuration
 
@@ -63,6 +72,8 @@ harnessctl validate path/to/catalog   # exit 1 and one line per problem; use it 
 - harnessctl never rewrites a JSON file that contains comments (such as a commented
   `opencode.jsonc`); it tells you the edit to make instead.
 - Claude Code's `settings.local.json` is shown but never changed.
+- Claude plugins installed at local scope are listed too, but read-only: enable/disable, update
+  and remove act on user or project scope only.
 - Hooks are never translated between harnesses: a catalog item ships one variant per harness.
 
 ## Development

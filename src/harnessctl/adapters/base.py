@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from harnessctl.jsonio import JsonFileError, has_comments, read_json, sha256_bytes
-from harnessctl.model import CatalogItem, InstalledItem, Kind, Scope
+from harnessctl.model import CatalogItem, InstalledItem, Kind, Scope, Variant
 from harnessctl.planner import PlanError, Step, WriteFile
 from harnessctl.sources.formats import read_frontmatter
 from harnessctl.validate import links_leaving
@@ -31,6 +31,7 @@ class Adapter(Protocol):
     def scope_dir(self, scope: Scope, project: Path | None) -> Path: ...
     def scan(self, scope: Scope, project: Path | None) -> list[InstalledItem]: ...
     def watched_paths(self, project: Path | None) -> list[Path]: ...
+    def unavailable_reason(self, variant: Variant) -> str | None: ...
     def plan_install(
         self, item: CatalogItem, scope: Scope, project: Path | None, replace: bool = False
     ) -> Install: ...

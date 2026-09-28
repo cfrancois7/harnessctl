@@ -1,11 +1,12 @@
 import contextlib
 import json
+import shutil
 
 from textual.widgets import Static
 
 from harnessctl.config import project_lock
 from harnessctl.tui.app import HarnessApp
-from harnessctl.tui.modals import PlanModal, ScopePicker, TextScreen
+from harnessctl.tui.modals import ConfirmScreen, PlanModal, ScopePicker, TextScreen
 from harnessctl.tui.views import InstalledView, ItemList
 from tests.helpers import settle
 
@@ -195,3 +196,149 @@ async def test_malformed_marketplace_source_does_not_crash_startup(tui, tmp_path
         await settle(pilot)
         assert app.is_running
         assert "api-conventions" in _items(app)
+
+
+async def test_plan_modal_names_source_and_commit(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space")
+        assert isinstance(app.screen, PlanModal)
+        where = str(app.screen.query_one("#plan-where", Static).render())
+        assert where.startswith("Claude Code · project scope · acme@")
+
+
+async def test_install_of_an_unavailable_plugin_says_why(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "down", "down", "i")
+        assert not isinstance(app.screen, ScopePicker)
+        assert app.last_outcome == (
+            "jira-context: the claude CLI is not on PATH, so plugins cannot be installed."
+        )
+
+
+async def test_failure_before_any_step_is_reported_as_is(tui, monkeypatch):
+    from harnessctl.planner import ApplyResult
+
+    message = "cannot back up before applying: disk full; nothing was changed"
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        monkeypatch.setattr(app.engine, "apply", lambda plan: ApplyResult(False, error=message))
+        await pilot.press("space", "enter")
+        await settle(pilot)
+        assert app.is_running
+        assert app.last_outcome == message
+
+
+def _skill_md(tui):
+    return tui.env.project / ".claude" / "skills" / "api-conventions" / "SKILL.md"
+
+
+async def test_confirm_with_y_is_never_confirmed_by_enter(tui):
+    app = tui.app()
+    answers: list[bool | None] = []
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        app.push_screen(ConfirmScreen("Remove?", "gone", "remove", yes_key="y"), answers.append)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.push_screen(ConfirmScreen("Remove?", "gone", "remove", yes_key="y"), answers.append)
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+    assert answers == [False, True]
+
+
+async def test_conflict_offers_to_re_plan(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space")
+        _skill_md(tui).write_text("edited by the agent")
+        await pilot.press("enter")
+        await settle(pilot)
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "changed since the plan was made" in str(
+            app.screen.query_one("#confirm-message", Static).render()
+        )
+        await pilot.press("enter")
+        await settle(pilot)
+        assert isinstance(app.screen, PlanModal)
+        assert app.screen.plan.title == "Disable api-conventions (project)"
+        await pilot.press("enter")
+        await settle(pilot)
+        assert not _skill_md(tui).exists()
+        payload = next((tui.env.paths.parking / "claude-code").glob("*/payload/SKILL.md"))
+        assert payload.read_text() == "edited by the agent"
+
+
+async def test_declining_to_re_plan_changes_nothing(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space")
+        _skill_md(tui).write_text("edited by the agent")
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.press("escape")
+        await settle(pilot)
+        assert not isinstance(app.screen, ConfirmScreen | PlanModal)
+        assert _skill_md(tui).read_text() == "edited by the agent"
+
+
+async def test_re_plan_when_the_item_is_gone_says_so(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space")
+        shutil.rmtree(_skill_md(tui).parent)  # the agent deleted it
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.press("enter")  # re-plan
+        await settle(pilot)
+        assert not isinstance(app.screen, PlanModal)
+        assert app.last_outcome == "api-conventions is no longer there; nothing to re-plan"
+        assert not (tui.env.paths.parking / "claude-code").exists()
+
+
+async def test_open_a_disabled_skill_opens_its_parked_copy(tui, monkeypatch):
+    calls = []
+    monkeypatch.setenv("EDITOR", "myeditor")
+    monkeypatch.setattr(HarnessApp, "suspend", lambda self: contextlib.nullcontext())
+    monkeypatch.setattr("harnessctl.tui.app.run_editor", calls.append)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("space", "enter")  # disable api-conventions
+        await settle(pilot)
+        await pilot.press("o")
+        opened = calls[-1][-1]
+        assert opened.endswith("/payload/SKILL.md")
+        assert opened.startswith(str(tui.env.paths.parking))
+
+
+async def test_open_a_disabled_hook_is_refused(tui, monkeypatch):
+    from harnessctl.model import Scope
+
+    engine = tui.env.engine()
+    engine.load_sources(fetch=False)
+    item = engine.find_item("acme", "block-secrets-read")
+    assert engine.apply(engine.plan_install(item, "claude-code", Scope.USER)).ok
+    hook = next(i for i in engine.installed("claude-code") if i.name == "block-secrets-read")
+    assert engine.apply(engine.plan_toggle(hook)).ok
+
+    calls = []
+    monkeypatch.setattr(HarnessApp, "suspend", lambda self: contextlib.nullcontext())
+    monkeypatch.setattr("harnessctl.tui.app.run_editor", calls.append)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("down", "down")  # Skills: api-conventions, my-notes; Hooks: block-secrets-read
+        assert app.query_one(InstalledView).selected.name == "block-secrets-read"
+        await pilot.press("o")
+        assert calls == []
+        assert app.last_outcome == "block-secrets-read is disabled; enable it (space) to edit it."

@@ -21,10 +21,10 @@ from textual.worker import get_current_worker
 
 from harnessctl.config import ConfigError
 from harnessctl.engine import CatalogEntry, Engine
-from harnessctl.model import InstalledItem, Scope
+from harnessctl.model import InstalledItem, Scope, Trust
 from harnessctl.planner import Plan, PlanConflict, PlanError
 from harnessctl.sources.cache import SourceState
-from harnessctl.tui.modals import PlanModal, ScopePicker
+from harnessctl.tui.modals import ConfirmScreen, PlanModal, ScopePicker
 from harnessctl.tui.text import short_path, sync_summary
 from harnessctl.tui.views import CatalogView, InstalledView, ItemList, ListDetailView, SourcesView
 
@@ -89,7 +89,9 @@ class HarnessApp(App[None]):
         self.narrow = False
         self.last_outcome = ""
         self._signature: tuple | None = None
+        self._sources_sig: tuple | None = None
         self._shown_lock_errors: set[str] = set()
+        self._shown_config_errors: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -110,6 +112,7 @@ class HarnessApp(App[None]):
         self.query_one(InstalledView).query_one(ItemList).focus()
         self.rescan()
         self.sync_sources()
+        self._sources_sig = self._sources_signature()
         self.set_interval(self.poll_interval, self.poll_changes)
 
     # --- layout ------------------------------------------------------------------------------
@@ -147,9 +150,29 @@ class HarnessApp(App[None]):
         self.call_from_thread(self._after_sync)
 
     def _after_sync(self) -> None:
-        for problem in self.engine.config_errors:
-            self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self._notify_config_errors(self.engine.config_errors)
         self.rescan()
+
+    @work(thread=True, group="sources")
+    def reload_sources(self) -> None:
+        def fetching(name: str) -> None:
+            self.call_from_thread(self.notify, f"Fetching source {name}…", title="Sources", timeout=6)
+
+        errors = self.engine.reload_sources(on_fetch=fetching)
+        self.call_from_thread(self._sources_reloaded, errors)
+
+    def _sources_reloaded(self, errors: list[str]) -> None:
+        self._notify_config_errors(errors)
+        self.rescan()
+
+    def _notify_config_errors(self, errors: list[str]) -> None:
+        # Only surface a configuration problem the first time it appears; once it clears (the
+        # file is fixed) forget it, so it is announced again if it comes back.
+        unique_errors = list(dict.fromkeys(errors))
+        for problem in unique_errors:
+            if problem not in self._shown_config_errors:
+                self.notify(problem, title="Configuration", severity="warning", timeout=10)
+        self._shown_config_errors = set(unique_errors)
 
     @work(thread=True, exclusive=True, group="scan")
     def rescan(self) -> None:
@@ -199,16 +222,27 @@ class HarnessApp(App[None]):
         sync = sync_summary(self.engine.sources, datetime.now(UTC), self.syncing)
         self.query_one(HeaderBar).update_from(self.engine.adapter(self.harness).label, where, sync)
 
+    @staticmethod
+    def _stat(path: Path) -> tuple[str, int | None]:
+        try:
+            return (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return (str(path), None)
+
     def _current_signature(self) -> tuple:
-        signature = []
-        for path in self.engine.watched_paths():
-            try:
-                signature.append((str(path), path.stat().st_mtime_ns))
-            except OSError:
-                signature.append((str(path), None))
-        return tuple(signature)
+        return tuple(self._stat(path) for path in self.engine.watched_paths())
+
+    def _sources_signature(self) -> tuple:
+        paths = self.engine.paths
+        return (self._stat(paths.corporate_toml), self._stat(paths.config_toml))
 
     def poll_changes(self) -> None:
+        sources = self._sources_signature()
+        if self._sources_sig is not None and sources != self._sources_sig:
+            self._sources_sig = sources
+            self.reload_sources()  # it rescans when done
+            return
+        self._sources_sig = sources
         if self._signature is not None and self._current_signature() != self._signature:
             self.rescan()
 
@@ -237,9 +271,11 @@ class HarnessApp(App[None]):
             message, title=title, severity="error" if error else "information", timeout=12 if error else 6
         )
 
-    def propose(self, build: Callable[[], Plan]) -> None:
-        # `build` only assembles the plan's steps in memory (no git or harness CLI runs), so it
-        # is safe to call straight from the UI thread; only apply_plan() below is a worker.
+    def propose(self, build: Callable[[], Plan], replan: Callable[[], Plan] | None = None) -> None:
+        # `build` only assembles the plan's steps in memory, and `replan` (when given) only
+        # re-scans the filesystem to find the item fresh (see e.g. ItemList._propose) — neither
+        # runs git or a harness CLI, so both are safe to call straight from the UI thread; only
+        # apply_plan() below is a worker.
         try:
             plan = build()
         except (PlanError, ConfigError) as exc:
@@ -252,25 +288,30 @@ class HarnessApp(App[None]):
         # Plan-time "left in place" warnings (e.g. a tampered lock entry) travel on the plan
         # itself (see Plan.warnings) and are rendered inside PlanModal — not read off shared
         # engine.lock_errors, which a concurrent rescan thread can reset or consume first.
+        again = replan or build
         label = self.engine.adapter(plan.harness).label
-        self.push_screen(PlanModal(plan, self.engine.paths.home, label), self._confirmed)
+        self.push_screen(
+            PlanModal(plan, self.engine.paths.home, label), lambda chosen: self._confirmed(chosen, again)
+        )
 
-    def _confirmed(self, plan: Plan | None) -> None:
+    def _confirmed(self, plan: Plan | None, replan: Callable[[], Plan]) -> None:
         if plan is not None:
-            self.apply_plan(plan)
+            self.apply_plan(plan, replan)
 
     @work(thread=True, group="apply")
-    def apply_plan(self, plan: Plan) -> None:
+    def apply_plan(self, plan: Plan, replan: Callable[[], Plan] | None = None) -> None:
         try:
             result = self.engine.apply(plan)
         except PlanConflict as exc:
-            self.call_from_thread(self._report, f"{exc}\nNothing was changed.", plan.title, True)
+            self.call_from_thread(self._conflict, plan, f"{exc}\nNothing was changed.", replan)
         except Exception as exc:  # noqa: BLE001 - e.g. the backup folder cannot be written
             log.exception("%s: apply failed", plan.title)
             self.call_from_thread(self._report, f"{type(exc).__name__}: {exc}", plan.title, True)
         else:
             if result.ok:
                 self.call_from_thread(self._report, plan.reload_hint or "Done.", plan.title)
+            elif result.failed_step is None:
+                self.call_from_thread(self._report, result.error or "Nothing was changed.", plan.title, True)
             else:
                 message = (
                     f"Step {result.failed_step + 1} failed: {result.error}\nEvery change was rolled back."
@@ -278,10 +319,22 @@ class HarnessApp(App[None]):
                 self.call_from_thread(self._report, message, plan.title, True)
         self.call_from_thread(self.rescan)
 
+    def _conflict(self, plan: Plan, message: str, replan: Callable[[], Plan] | None) -> None:
+        if replan is None:
+            self._report(message, plan.title, error=True)
+            return
+        self.last_outcome = message  # shown once, in the modal below: no toast repeating it
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self.propose(replan)
+
+        self.push_screen(ConfirmScreen(plan.title, message, "re-plan"), answered)
+
     def install(self, entry: CatalogEntry) -> None:
         adapter = self.engine.adapter(self.harness)
         if not entry.available:
-            self._report(f"{entry.item.id} has no {adapter.label} variant.", "Cannot do that", error=True)
+            self._report(f"{entry.item.id}: {entry.reason}.", "Cannot do that", error=True)
             return
         scopes = self.engine.scopes()
         if len(scopes) == 1:
@@ -297,12 +350,20 @@ class HarnessApp(App[None]):
         self.push_screen(ScopePicker(entry.item.id, choices), chosen)
 
     def edit_item(self, item: InstalledItem) -> None:
-        target = Path(
-            item.meta.get("settings")
-            or item.meta.get("config")
-            or item.meta.get("install_path")
-            or item.location
-        )
+        if item.meta.get("park_dir"):
+            target = Path(item.meta["park_dir"]) / "payload"
+            if not target.exists():
+                self._report(
+                    f"{item.name} is disabled; enable it (space) to edit it.", "Cannot do that", error=True
+                )
+                return
+        else:
+            target = Path(
+                item.meta.get("settings")
+                or item.meta.get("config")
+                or item.meta.get("install_path")
+                or item.location
+            )
         if target.is_dir() and (target / "SKILL.md").is_file():
             target = target / "SKILL.md"
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
@@ -338,17 +399,40 @@ class HarnessApp(App[None]):
 
     @work(thread=True, group="sources")
     def refresh_source(self, name: str) -> None:
-        state = self.engine.refresh_source(name)
+        try:
+            state = self.engine.refresh_source(name)
+        except ConfigError as exc:
+            self.call_from_thread(self._report, str(exc), "Cannot refresh source", True)
+            return
         self.call_from_thread(
             self._report, self._source_outcome(state), "Source refreshed", state.status != "ok"
         )
         self.call_from_thread(self.rescan)
 
+    def confirm_remove_source(self, state: SourceState) -> None:
+        if state.spec.trust is Trust.CORPORATE:
+            self._report(
+                "corporate sources are managed in corporate.toml", "Cannot remove source", error=True
+            )
+            return
+        name = state.spec.name
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self.remove_source(name)
+
+        message = (
+            f"{state.spec.url}\n\nIts cached checkout is deleted. "
+            "Items you installed from it stay installed and show as unknown."
+        )
+        self.push_screen(ConfirmScreen(f"Remove source {name}?", message, "remove", yes_key="y"), answered)
+
+    @work(thread=True, group="sources")
     def remove_source(self, name: str) -> None:
         try:
             self.engine.remove_source(name)
         except ConfigError as exc:
-            self._report(str(exc), "Cannot remove source", error=True)
+            self.call_from_thread(self._report, str(exc), "Cannot remove source", True)
             return
-        self._report(f"{name} removed.", "Source removed")
-        self.rescan()
+        self.call_from_thread(self._report, f"{name} removed.", "Source removed")
+        self.call_from_thread(self.rescan)

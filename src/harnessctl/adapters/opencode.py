@@ -26,6 +26,7 @@ from harnessctl.model import (
     Scope,
     SkillVariant,
     Status,
+    Variant,
 )
 from harnessctl.parking import park_dir, park_steps, scan_parked, unpark_steps
 from harnessctl.planner import DeletePath, EditJson, MovePath, PlanError, Step
@@ -93,6 +94,9 @@ class OpencodeAdapter:
                 project / ".opencode" / "plugins",
             ]
         return paths
+
+    def unavailable_reason(self, variant: Variant) -> str | None:
+        return None  # opencode variants need no external tool to install
 
     # --- scanning ----------------------------------------------------------------------------
 

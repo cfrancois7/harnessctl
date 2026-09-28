@@ -131,3 +131,23 @@ def test_plan_text():
     plan = Plan.build("Install x", "claude-code", Scope.USER, steps)
     lines = plan_text(plan, HOME).plain.splitlines()
     assert lines == [" + write  ~/a", " $ run    claude x"]
+
+
+def test_catalog_detail_says_why_an_item_is_unavailable():
+    entry = _entry()
+    entry.available = False
+    entry.reason = "the claude CLI is not on PATH, so plugins cannot be installed"
+    md = catalog_detail(entry)
+    assert "*Not available: the claude CLI is not on PATH, so plugins cannot be installed.*" in md
+
+
+def test_catalog_row_marks_an_unavailable_item_with_a_symbol_not_only_dimming():
+    # Colour (dim) is never the only signal, and below 100 columns the detail pane is hidden.
+    entry = _entry()
+    entry.available = False
+    entry.reason = "the claude CLI is not on PATH, so plugins cannot be installed"
+    assert catalog_row(entry).plain.startswith(" ✗ jira-context")
+    installed = _entry([Scope.USER])
+    installed.available = False
+    installed.reason = entry.reason
+    assert catalog_row(installed).plain.startswith(" ✓ jira-context")  # installed wins

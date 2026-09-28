@@ -27,9 +27,12 @@ from harnessctl.model import (
     Scope,
     SkillVariant,
     Status,
+    Variant,
 )
 from harnessctl.parking import park_dir, park_steps, scan_parked, unpark_steps
 from harnessctl.planner import DeletePath, EditJson, MovePath, PlanError, RunCommand, Step
+
+NO_CLI = "the claude CLI is not on PATH, so plugins cannot be installed"
 
 
 def _command_name(command: str) -> str:
@@ -133,13 +136,23 @@ class ClaudeCodeAdapter:
             paths += [pd / "settings.json", pd / "settings.local.json", pd / "skills"]
         return paths
 
+    def unavailable_reason(self, variant: Variant) -> str | None:
+        """Why this machine cannot install `variant` right now (checked on every scan)."""
+        if isinstance(variant, ClaudePluginVariant) and self._which("claude") is None:
+            return NO_CLI
+        return None
+
     # --- scanning ----------------------------------------------------------------------------
 
     def scan(self, scope: Scope, project: Path | None) -> list[InstalledItem]:
         if scope is not Scope.USER and project is None:
             return []
         if scope is Scope.LOCAL:
-            return self._scan_hooks(scope, project)
+            # A broken plugin file is already reported under user and project scope.
+            plugins = [i for i in self._scan_plugins(scope, project) if i.status is not Status.BROKEN]
+            for item in plugins:
+                item.readonly = item.readonly or "local scope is read-only"
+            return self._scan_hooks(scope, project) + plugins
         scope_dir = self.scope_dir(scope, project)
         items = scan_skill_dirs(scope_dir / "skills", self.id, scope)
         if scope is Scope.USER:
@@ -247,7 +260,7 @@ class ClaudeCodeAdapter:
             for rec in records if isinstance(records, list) else []:
                 if not isinstance(rec, dict) or rec.get("scope") != scope.value:
                     continue
-                if scope is Scope.PROJECT and Path(str(rec.get("projectPath", ""))) != project:
+                if scope in (Scope.PROJECT, Scope.LOCAL) and Path(str(rec.get("projectPath", ""))) != project:
                     continue
                 items += self._plugin_items(pid, rec, scope, bool(enabled.get(pid, False)), markets)
         return items
@@ -335,7 +348,7 @@ class ClaudeCodeAdapter:
 
     def _install_plugin(self, variant: ClaudePluginVariant, scope: Scope, project: Path | None) -> Install:
         if self._which("claude") is None:
-            raise PlanError("the claude CLI is not on PATH, so plugins cannot be installed")
+            raise PlanError(NO_CLI)
         try:
             markets = read_json(self.claude_dir / "plugins" / "known_marketplaces.json", default={})
         except JsonFileError:

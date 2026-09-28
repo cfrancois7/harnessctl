@@ -1,4 +1,6 @@
 import json
+import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -262,3 +264,154 @@ def test_parked_catalog_hook_keeps_its_provenance_and_can_be_removed(engine, env
     assert engine.apply(engine.plan_remove(parked)).ok
     assert not list((env.paths.parking / "claude-code").iterdir())
     assert json.loads(env.paths.user_lock.read_text())["entries"] == []
+
+
+def test_plans_name_their_source_and_commit(engine, env):
+    commit = engine.sources[0].commit
+    item = _item(engine, "api-conventions")
+    plan = engine.plan_install(item, "claude-code", Scope.USER)
+    assert plan.origin == f"acme@{commit[:7]}"
+    assert engine.apply(plan).ok
+    inst = _installed(engine, "api-conventions")
+    assert engine.plan_toggle(inst).origin == f"acme@{commit[:7]}"
+    assert engine.plan_remove(inst).origin == f"acme@{commit[:7]}"
+    skill(env.home / ".claude" / "skills" / "mine")
+    assert engine.plan_toggle(_installed(engine, "mine")).origin == ""
+
+
+def test_plugin_unavailable_without_the_claude_cli_until_it_appears(engine, env):
+    entries = {e.item.id: e for e in engine.catalog("claude-code")}
+    assert entries["jira-context"].available is False
+    assert entries["jira-context"].reason == "the claude CLI is not on PATH, so plugins cannot be installed"
+    assert entries["api-conventions"].available and entries["api-conventions"].reason is None
+
+    stub_command(env.bin, "claude", env.home / "claude-calls.log")  # installed while running
+    entries = {e.item.id: e for e in engine.catalog("claude-code")}
+    assert entries["jira-context"].available is True and entries["jira-context"].reason is None
+
+
+def test_find_installed_returns_the_item_from_a_fresh_scan(engine, env):
+    engine.apply(engine.plan_install(_item(engine, "api-conventions"), "claude-code", Scope.USER))
+    old = _installed(engine, "api-conventions")
+    (env.home / ".claude" / "skills" / "api-conventions" / "SKILL.md").write_text("edited")
+    fresh = engine.find_installed(old)
+    assert fresh is not old and fresh.status is Status.MODIFIED
+    assert engine.apply(engine.plan_toggle(fresh)).ok
+    assert engine.find_installed(old) is None  # disabled now: a different item
+
+
+def test_find_installed_picks_the_exact_parked_copy_among_several(engine, env):
+    """Two parked copies of the same skill share an origin_location (park_dir suffixes -2, -3,
+    ... when a location is parked more than once); find_installed must not confuse them."""
+    item = _item(engine, "api-conventions")
+    engine.apply(engine.plan_install(item, "claude-code", Scope.USER))
+    assert engine.apply(engine.plan_toggle(_installed(engine, "api-conventions"))).ok
+    old1 = _installed(engine, "api-conventions")
+    assert old1.enabled is False
+
+    engine.apply(engine.plan_install(item, "claude-code", Scope.USER))  # reinstall over the free spot
+    assert engine.apply(engine.plan_toggle(_installed(engine, "api-conventions"))).ok
+    parked = [i for i in engine.installed("claude-code") if i.name == "api-conventions" and not i.enabled]
+    assert len(parked) == 2
+    old2 = next(i for i in parked if i.location != old1.location)
+
+    assert old1.origin_location == old2.origin_location  # same origin: this is the ambiguity
+    assert old1.location != old2.location  # but distinct parking folders
+
+    fresh1 = engine.find_installed(old1)
+    fresh2 = engine.find_installed(old2)
+    assert fresh1 is not None and fresh1.location == old1.location
+    assert fresh2 is not None and fresh2.location == old2.location
+
+    shutil.rmtree(Path(old1.meta["park_dir"]))  # only old1's copy vanishes
+    assert engine.find_installed(old1) is None
+    assert engine.find_installed(old2) is not None and engine.find_installed(old2).location == old2.location
+
+
+def test_the_same_repo_under_another_url_form_is_refused(engine, env):
+    write(env.paths.config_toml, '[[source]]\nname = "tools"\nurl = "git@github.com:acme/tools.git"\n')
+    engine.load_sources(fetch=False)
+    with pytest.raises(ConfigError, match="already configured as source 'tools'"):
+        engine.add_source("https://github.com/acme/tools", name="tools2")
+    assert "tools2" not in env.paths.config_toml.read_text()
+
+
+def test_removing_a_source_keeps_its_installed_items_as_unknown(engine, env, tmp_path):
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+    engine.add_source(other.as_uri(), name="pub")
+    assert engine.apply(engine.plan_install(engine.find_item("pub", "tdd"), "claude-code", Scope.USER)).ok
+    engine.remove_source("pub")
+    tdd = _installed(engine, "tdd")
+    assert tdd.provenance.origin == "unknown"
+    assert (env.home / ".claude" / "skills" / "tdd" / "SKILL.md").is_file()
+
+
+def test_reload_sources_keeps_unchanged_states_and_fetches_new_ones(engine, env, tmp_path):
+    acme_state = engine.sources[0]
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+    write(env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{other.as_uri()}"\n')
+    fetched: list[str] = []
+    assert engine.reload_sources(on_fetch=fetched.append) == []
+    assert fetched == ["pub"]
+    assert engine.sources[0] is acme_state  # not fetched again
+    assert [i.id for i in engine.sources[1].items] == ["tdd"]
+    env.paths.config_toml.write_text("")
+    engine.reload_sources()
+    assert [s.spec.name for s in engine.sources] == ["acme"]
+
+
+def test_a_reload_racing_a_slow_add_never_duplicates_or_refetches(engine, env, tmp_path, monkeypatch):
+    other = tmp_path / "pub"
+    skill(other / "skills" / "tdd")
+    make_repo(None, other)
+
+    import harnessctl.engine as engine_module
+
+    real_sync_source = engine_module.sync_source
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_sync_source(spec, cache_root, fetch=True, timeout=60):
+        if spec.name == "pub" and fetch:
+            started.set()
+            release.wait(5)
+        return real_sync_source(spec, cache_root, fetch=fetch, timeout=timeout)
+
+    monkeypatch.setattr(engine_module, "sync_source", slow_sync_source)
+
+    fetched: list[str] = []
+    errors: list[BaseException] = []
+
+    def guarded(fn) -> None:
+        # A Thread swallows an exception raised in its target (just prints it): capture it
+        # instead, so a crash in either thread fails this test rather than passing vacuously.
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised via `errors` below
+            errors.append(exc)
+
+    adder = threading.Thread(target=guarded, args=(lambda: engine.add_source(other.as_uri(), name="pub"),))
+    adder.start()
+    assert started.wait(5)
+    reloader = threading.Thread(
+        target=guarded, args=(lambda: engine.reload_sources(on_fetch=fetched.append),)
+    )
+    reloader.start()
+    release.set()
+    adder.join(5)
+    reloader.join(5)
+
+    assert not adder.is_alive() and not reloader.is_alive()
+    assert errors == []
+    assert [s.spec.name for s in engine.sources].count("pub") == 1
+    assert fetched == []
+
+
+def test_refreshing_a_gone_source_is_reported_not_a_crash(engine):
+    with pytest.raises(ConfigError, match="source 'ghost' is no longer configured"):
+        engine.refresh_source("ghost")
+    assert [s.spec.name for s in engine.sources] == ["acme"]

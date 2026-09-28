@@ -7,7 +7,7 @@ from textual.widgets import Static, TabbedContent
 
 from harnessctl.tui.modals import DetailScreen
 from harnessctl.tui.views import CatalogView, DetailPane, InstalledView, ItemList
-from tests.helpers import settle, skill, write
+from tests.helpers import make_repo, settle, skill, write
 
 
 def _names(app, view=InstalledView):
@@ -154,3 +154,137 @@ async def test_broken_lock_file_toasts_once(tui):
         app.rescan()
         await settle(pilot)
         assert len(warnings()) == 1  # not re-toasted on a second scan of the same broken file
+
+
+def _public_source(tui, tmp_path):
+    public = tmp_path / "pub"
+    skill(public / "skills" / "tdd")
+    make_repo(None, public)
+    write(tui.env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{public.as_uri()}"\n')
+    tui.env.engine().load_sources(fetch=True)  # clone it into the shared cache
+    return public
+
+
+async def test_catalog_filters_by_source_and_type(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2")
+        view = app.query_one(CatalogView)
+        everything = ["api-conventions", "block-secrets-read", "jira-context", "tdd"]
+        assert _names(app, CatalogView) == everything
+        await pilot.press("s")
+        assert _names(app, CatalogView) == ["api-conventions", "block-secrets-read", "jira-context"]
+        status = str(view.query_one("#filters", Static).render())
+        assert "source: acme" in status and "3/4" in status
+        await pilot.press("s")
+        assert _names(app, CatalogView) == ["tdd"]
+        await pilot.press("s")
+        assert _names(app, CatalogView) == everything
+        assert view.query_one("#filters").display is False
+        await pilot.press("t")
+        assert _names(app, CatalogView) == ["api-conventions", "tdd"]
+        assert "type: skill" in str(view.query_one("#filters", Static).render())
+        await pilot.press("t")
+        assert _names(app, CatalogView) == ["block-secrets-read"]
+        await pilot.press("t", "t")
+        assert _names(app, CatalogView) == everything
+
+
+async def test_escape_clears_the_source_and_type_filters(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "s", "t")
+        assert _names(app, CatalogView) == ["api-conventions"]
+        await pilot.press("escape")
+        view = app.query_one(CatalogView)
+        assert view.source_filter is None and view.kind_filter is None
+        assert _names(app, CatalogView) == ["api-conventions", "block-secrets-read", "jira-context", "tdd"]
+        assert view.query_one("#filters").display is False
+
+
+async def test_filters_that_match_nothing_say_how_to_change_them(tui, tmp_path):
+    _public_source(tui, tmp_path)
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("2", "s", "s", "t", "t")  # source pub, type hook: nothing
+        assert _names(app, CatalogView) == []
+        detail = app.query_one(CatalogView).query_one(DetailPane).markdown
+        assert "No item matches these filters" in detail and "`s`" in detail and "`esc`" in detail
+
+
+async def test_editing_config_toml_reloads_sources(tui, tmp_path):
+    public = tmp_path / "pub"
+    skill(public / "skills" / "tdd")
+    make_repo(None, public)
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, f'[[source]]\nname = "pub"\nurl = "{public.as_uri()}"\n')
+        app.poll_changes()
+        await settle(pilot)
+        assert "Fetching source pub…" in notifications  # a fetch may take long: say so first
+        await pilot.press("2")
+        assert "tdd" in _names(app, CatalogView)
+
+
+async def test_a_broken_config_toml_is_reported_and_the_app_keeps_going(tui):
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")
+        app.poll_changes()
+        await settle(pilot)
+        assert app.is_running
+        assert any("config.toml" in m for m in notifications)
+        await pilot.press("2")
+        assert "api-conventions" in _names(app, CatalogView)  # corporate sources still there
+
+
+async def test_a_repeated_config_error_is_only_notified_once(tui):
+    app = tui.app()
+    notifications: list[str] = []
+    app.notify = lambda message, **kw: notifications.append(message)
+
+    def config_errors(msgs: list[str]) -> list[str]:
+        return [m for m in msgs if "config.toml" in m]
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 1
+
+        write(tui.env.paths.config_toml, "[[source]\n")  # rewritten, same problem
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 1  # not shown again
+
+        write(tui.env.paths.config_toml, "")  # fixed
+        app.poll_changes()
+        await settle(pilot)
+        write(tui.env.paths.config_toml, "[[source]\n")  # broken again
+        app.poll_changes()
+        await settle(pilot)
+        assert len(config_errors(notifications)) == 2  # shown again now that it recurred
+
+
+async def test_cursor_stays_on_the_item_after_disabling_it(tui):
+    app = tui.app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await settle(pilot)
+        await pilot.press("down")
+        assert app.query_one(InstalledView).selected.name == "my-notes"
+        await pilot.press("space", "enter")
+        await settle(pilot)
+        selected = app.query_one(InstalledView).selected
+        assert selected.name == "my-notes" and selected.enabled is False
